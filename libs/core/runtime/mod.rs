@@ -22,7 +22,7 @@ pub const V8_WRAPPER_OBJECT_INDEX: i32 = 1;
 
 pub use jsrealm::CONTEXT_STATE_SLOT_INDEX;
 pub use jsrealm::ContextState;
-pub(crate) use jsrealm::JsRealm;
+pub use jsrealm::JsRealm;
 pub use jsrealm::MODULE_MAP_SLOT_INDEX;
 pub(crate) use jsrealm::OpDriverImpl;
 pub(crate) use jsrealm::UnrefedOps;

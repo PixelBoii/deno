@@ -99,9 +99,12 @@ pub struct ContextState {
   pub(crate) unrefed_ops: UnrefedOps,
   pub(crate) activity_traces: RuntimeActivityTraces,
   pub(crate) pending_ops: Rc<OpDriverImpl>,
+  /// Consecutive ticks with a pending module but no reported top-level await.
+  pub(crate) tla_stall_retries: Cell<u32>,
   // We don't explicitly re-read this prop but need the slice to live alongside
   // the context
   pub(crate) op_ctxs: OpCtxs,
+  pub(crate) function_templates: RefCell<FunctionTemplateData>,
   pub(crate) op_method_decls: Vec<OpMethodDecl>,
   pub(crate) methods_ctx_offset: usize,
   /// Snapshots built against V8 14.9+ bake the *slow* version of each op
@@ -146,7 +149,7 @@ pub struct ContextState {
   /// Phase-specific state for the libuv-style event loop.
   pub event_loop_phases: RefCell<EventLoopPhases>,
   /// Pointer to the `UvLoopInner` for the libuv compat layer.
-  /// Set via [`JsRuntime::register_uv_loop`] when a `uv_loop_t` is
+  /// Set via [`JsRuntime::register_uv_loop`](crate::JsRuntime::register_uv_loop) when a `uv_loop_t` is
   /// associated with this context.
   ///
   /// # Safety
@@ -215,11 +218,13 @@ impl ContextState {
       wasm_instances_map: Default::default(),
       activity_traces: Default::default(),
       op_ctxs,
+      function_templates: Default::default(),
       op_method_decls,
       methods_ctx_offset,
       fast_ops_upgraded: Cell::new(false),
       deferred_fast_ops: RefCell::new(None),
       pending_ops: op_driver,
+      tla_stall_retries: Cell::new(0),
       task_spawner_factory: Default::default(),
       user_timer: Default::default(),
       timer_info: Box::new([0i32; 1]),
@@ -238,14 +243,13 @@ impl ContextState {
   }
 }
 
-/// A representation of a JavaScript realm tied to a [`JsRuntime`], that allows
+/// A representation of a JavaScript realm tied to a [`JsRuntime`](crate::JsRuntime), that allows
 /// execution in the realm's context.
 ///
 /// A [`JsRealm`] instance is a reference to an already existing realm, which
 /// does not hold ownership of it, so instances can be created and dropped as
-/// needed. As such, calling [`JsRealm::new`] doesn't create a new realm, and
-/// cloning a [`JsRealm`] only creates a new reference. See
-/// [`JsRuntime::create_realm`] to create new realms instead.
+/// needed. Cloning a [`JsRealm`] only creates a new reference. See
+/// [`JsRuntime::new_realm`](crate::JsRuntime::new_realm) to create new realms instead.
 ///
 /// Despite [`JsRealm`] instances being references, multiple instances that
 /// point to the same realm won't overlap because every operation requires
@@ -259,23 +263,22 @@ impl ContextState {
 /// [`v8::Isolate`] other than the one that corresponds to the current context.
 ///
 /// In other words, the [`v8::Isolate`] parameter for all the related [`JsRealm`] methods
-/// must be extracted from the pre-existing [`JsRuntime`].
+/// must be extracted from the pre-existing [`JsRuntime`](crate::JsRuntime).
 ///
 /// # Lifetime of the realm
 ///
 /// As long as the corresponding isolate is alive, a [`JsRealm`] instance will
 /// keep the underlying V8 context alive even if it would have otherwise been
-/// garbage collected.
+/// garbage collected. The runtime retains each realm until it is dropped.
 #[derive(Clone)]
 #[repr(transparent)]
-pub(crate) struct JsRealm(pub(crate) JsRealmInner);
+pub struct JsRealm(pub(crate) JsRealmInner);
 
 #[derive(Clone)]
 pub(crate) struct JsRealmInner {
   pub(crate) context_state: Rc<ContextState>,
   context: v8::Global<v8::Context>,
   pub(crate) module_map: Rc<ModuleMap>,
-  pub(crate) function_templates: Rc<RefCell<FunctionTemplateData>>,
 }
 
 impl JsRealmInner {
@@ -283,13 +286,11 @@ impl JsRealmInner {
     context_state: Rc<ContextState>,
     context: v8::Global<v8::Context>,
     module_map: Rc<ModuleMap>,
-    function_templates: Rc<RefCell<FunctionTemplateData>>,
   ) -> Self {
     Self {
       context_state,
       context: context.clone(),
       module_map,
-      function_templates,
     }
   }
 
@@ -309,8 +310,8 @@ impl JsRealmInner {
   }
 
   #[inline(always)]
-  pub(crate) fn function_templates(&self) -> Rc<RefCell<FunctionTemplateData>> {
-    self.function_templates.clone()
+  pub(crate) fn function_templates(&self) -> &RefCell<FunctionTemplateData> {
+    &self.context_state.function_templates
   }
 
   pub fn destroy(self) {
@@ -413,7 +414,7 @@ impl JsRealm {
   }
 
   #[inline(always)]
-  pub(crate) fn state_from_scope(scope: &mut v8::PinScope) -> Rc<ContextState> {
+  pub(crate) fn state_from_scope(scope: &v8::PinScope) -> Rc<ContextState> {
     let context = scope.get_current_context();
     // SAFETY: slot is valid and set during realm creation
     unsafe {
@@ -466,7 +467,7 @@ impl JsRealm {
   /// The `name` parameter can be a filepath or any other string. E.g.:
   ///
   ///   - "/some/file/path.js"
-  ///   - "<anon>"
+  ///   - `"<anon>"`
   ///   - "[native code]"
   ///
   /// The same `name` value can be used for multiple executions.

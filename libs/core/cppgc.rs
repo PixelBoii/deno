@@ -9,6 +9,7 @@ pub use v8::cppgc::GarbageCollected;
 pub use v8::cppgc::GcCell;
 
 use crate::JsRuntime;
+use crate::runtime::JsRealm;
 use crate::runtime::SnapshotLoadDataStore;
 use crate::runtime::SnapshotStoreDataStore;
 
@@ -50,7 +51,8 @@ pub fn make_cppgc_empty_object<'a, 'i, T: GarbageCollected + 'static>(
   scope: &v8::PinScope<'a, 'i>,
 ) -> v8::Local<'a, v8::Object> {
   let state = JsRuntime::state_from(scope);
-  let templates = state.function_templates.borrow();
+  let context_state = JsRealm::state_from_scope(scope);
+  let templates = context_state.function_templates.borrow();
 
   match templates.get::<T>() {
     Some(templ) => {

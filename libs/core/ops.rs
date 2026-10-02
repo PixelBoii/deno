@@ -21,7 +21,6 @@ use crate::io::ResourceTable;
 use crate::ops_metrics::OpMetricsFn;
 use crate::runtime::JsRuntimeState;
 use crate::runtime::OpDriverImpl;
-use crate::runtime::UnrefedOps;
 
 pub type PromiseId = i32;
 pub type OpId = u16;
@@ -287,6 +286,7 @@ pub struct OpCtxs {
 /// (`Extension::middleware`) rewrites decls at startup, `ops_fn` appends to
 /// the table, and method constructors get their name patched from the
 /// enclosing `OpMethodDecl`.
+#[derive(Clone)]
 pub enum OpDeclStorage {
   Static(&'static [OpDecl]),
   Owned(Vec<OpDecl>),
@@ -314,6 +314,24 @@ impl OpDeclStorage {
 }
 
 impl OpCtxs {
+  /// Rebuild the op contexts for another realm, keeping the registration order
+  /// and metadata but using the new realm's async driver.
+  pub(crate) fn clone_for_realm(&self, op_driver: Rc<OpDriverImpl>) -> Self {
+    let op_ctxs = Self::new(
+      self.decls.clone(),
+      self.common.state.clone(),
+      op_driver,
+      self.common.runtime_state,
+      self.common.enable_stack_trace,
+      |index, _| {
+        let ctx = &self.ctxs[index];
+        (ctx.id, ctx.metrics_fn.clone())
+      },
+    );
+    op_ctxs.set_isolate(self.common.isolate.get());
+    op_ctxs
+  }
+
   pub(crate) fn new(
     decls: Vec<OpDeclStorage>,
     state: Rc<RefCell<OpState>>,
@@ -396,8 +414,6 @@ pub struct OpState {
   pub waker: Arc<AtomicWaker>,
   pub external_ops_tracker: ExternalOpsTracker,
   pub op_stack_trace_callback: Option<OpStackTraceCallback>,
-  /// Reference to the unrefered ops state in `ContextState`.
-  pub(crate) unrefed_ops: UnrefedOps,
   /// Resources that are not referenced by the event loop. All async
   /// resource ops on these resources will not keep the event loop alive.
   ///
@@ -415,7 +431,6 @@ impl OpState {
         counter: Arc::new(AtomicUsize::new(0)),
       },
       op_stack_trace_callback,
-      unrefed_ops: Default::default(),
       unrefed_resources: Default::default(),
     }
   }

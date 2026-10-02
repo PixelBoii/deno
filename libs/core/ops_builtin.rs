@@ -1,6 +1,7 @@
 // Copyright 2018-2026 the Deno authors. MIT license.
 
 use std::cell::RefCell;
+use std::future::Future;
 use std::io::Write;
 use std::io::stderr;
 use std::io::stdout;
@@ -34,6 +35,7 @@ use crate::op2;
 use crate::ops_builtin_types;
 use crate::ops_builtin_v8;
 use crate::runtime::JsRealm;
+use crate::runtime::UnrefedOps;
 use crate::runtime::v8_static_strings;
 
 macro_rules! builtin_ops {
@@ -329,6 +331,7 @@ pub fn op_wasm_streaming_set_url(
 // handle unrefing the current task.
 fn get_resource(
   state: Rc<RefCell<OpState>>,
+  unrefed_ops: &UnrefedOps,
   rid: ResourceId,
   promise_id: i32,
 ) -> Result<Rc<dyn Resource>, JsErrorBox> {
@@ -339,73 +342,85 @@ fn get_resource(
     .map_err(JsErrorBox::from_err)?;
 
   if op_state.unrefed_resources.contains(&rid) {
-    op_state.unrefed_ops.borrow_mut().insert(promise_id);
+    unrefed_ops.borrow_mut().insert(promise_id);
   }
 
   Ok(resource)
 }
 
 #[op2(promise_id)]
-async fn op_read(
+fn op_read(
+  scope: &mut v8::PinScope,
   state: Rc<RefCell<OpState>>,
   #[smi] promise_id: i32,
   #[smi] rid: ResourceId,
   #[buffer] buf: JsBuffer,
-) -> Result<u32, JsErrorBox> {
-  let resource = get_resource(state, rid, promise_id)?;
+) -> impl Future<Output = Result<u32, JsErrorBox>> + use<> {
+  let unrefed_ops = JsRealm::state_from_scope(scope).unrefed_ops.clone();
+  async move {
+    let resource = get_resource(state, &unrefed_ops, rid, promise_id)?;
 
-  let view = BufMutView::from(buf);
-  resource.read_byob(view).await.map(|(n, _)| n as u32)
+    let view = BufMutView::from(buf);
+    resource.read_byob(view).await.map(|(n, _)| n as u32)
+  }
 }
 
 #[op2(promise_id)]
 #[buffer]
-async fn op_read_all(
+fn op_read_all(
+  scope: &mut v8::PinScope,
   state: Rc<RefCell<OpState>>,
   #[smi] promise_id: i32,
   #[smi] rid: ResourceId,
-) -> Result<BytesMut, JsErrorBox> {
-  let resource = get_resource(state, rid, promise_id)?;
+) -> impl Future<Output = Result<BytesMut, JsErrorBox>> + use<> {
+  let unrefed_ops = JsRealm::state_from_scope(scope).unrefed_ops.clone();
+  async move {
+    let resource = get_resource(state, &unrefed_ops, rid, promise_id)?;
 
-  let (min, maybe_max) = resource.size_hint();
-  let mut buffer_strategy =
-    AdaptiveBufferStrategy::new_from_hint_u64(min, maybe_max);
-  let mut buf = BufMutView::new(buffer_strategy.buffer_size());
+    let (min, maybe_max) = resource.size_hint();
+    let mut buffer_strategy =
+      AdaptiveBufferStrategy::new_from_hint_u64(min, maybe_max);
+    let mut buf = BufMutView::new(buffer_strategy.buffer_size());
 
-  loop {
-    #[allow(deprecated, reason = "needed for compatibility")]
-    buf.maybe_grow(buffer_strategy.buffer_size()).unwrap();
+    loop {
+      #[allow(deprecated, reason = "needed for compatibility")]
+      buf.maybe_grow(buffer_strategy.buffer_size()).unwrap();
 
-    let (n, new_buf) = resource.clone().read_byob(buf).await?;
-    buf = new_buf;
-    buf.advance_cursor(n);
-    if n == 0 {
-      break;
+      let (n, new_buf) = resource.clone().read_byob(buf).await?;
+      buf = new_buf;
+      buf.advance_cursor(n);
+      if n == 0 {
+        break;
+      }
+
+      buffer_strategy.notify_read(n);
     }
 
-    buffer_strategy.notify_read(n);
+    let nread = buf.reset_cursor();
+    // If the buffer is larger than the amount of data read, shrink it to the
+    // amount of data read.
+    buf.truncate(nread);
+
+    Ok(buf.maybe_unwrap_bytes().unwrap())
   }
-
-  let nread = buf.reset_cursor();
-  // If the buffer is larger than the amount of data read, shrink it to the
-  // amount of data read.
-  buf.truncate(nread);
-
-  Ok(buf.maybe_unwrap_bytes().unwrap())
 }
 
 #[op2(promise_id)]
-async fn op_write(
+fn op_write(
+  scope: &mut v8::PinScope,
   state: Rc<RefCell<OpState>>,
   #[smi] promise_id: i32,
   #[smi] rid: ResourceId,
   #[buffer] buf: JsBuffer,
-) -> Result<u32, JsErrorBox> {
-  let resource = get_resource(state, rid, promise_id)?;
+) -> impl Future<Output = Result<u32, JsErrorBox>> + use<> {
+  let unrefed_ops = JsRealm::state_from_scope(scope).unrefed_ops.clone();
+  async move {
+    let resource = get_resource(state, &unrefed_ops, rid, promise_id)?;
 
-  let view = BufView::from(buf);
-  let resp = resource.write(view).await?;
-  Ok(resp.nwritten() as u32)
+    let view = BufView::from(buf);
+    let resp = resource.write(view).await?;
+    Ok(resp.nwritten() as u32)
+  }
 }
 
 #[op2(fast)]
@@ -473,60 +488,64 @@ async fn op_write_all(
 /// `AbortSignal` handler) aborts the pump promptly. The handle is consumed
 /// before returning, mirroring `op_net_connect_tcp`.
 #[op2(promise_id)]
-async fn op_pipe(
+fn op_pipe(
+  scope: &mut v8::PinScope,
   state: Rc<RefCell<OpState>>,
   #[smi] promise_id: i32,
   #[smi] src_rid: ResourceId,
   #[smi] dst_rid: ResourceId,
   #[smi] cancel_rid: Option<ResourceId>,
-) -> Result<(), JsErrorBox> {
-  // Unref bookkeeping is keyed off the source, since that is what we await on.
-  let src = get_resource(state.clone(), src_rid, promise_id)?;
-  let dst = state
-    .borrow()
-    .resource_table
-    .get_any(dst_rid)
-    .map_err(JsErrorBox::from_err)?;
-  let cancel_handle = cancel_rid.and_then(|rid| {
-    state.borrow().resource_table.get::<CancelHandle>(rid).ok()
-  });
+) -> impl Future<Output = Result<(), JsErrorBox>> + use<> {
+  let unrefed_ops = JsRealm::state_from_scope(scope).unrefed_ops.clone();
+  async move {
+    // Unref bookkeeping is keyed off the source, since that is what we await on.
+    let src = get_resource(state.clone(), &unrefed_ops, src_rid, promise_id)?;
+    let dst = state
+      .borrow()
+      .resource_table
+      .get_any(dst_rid)
+      .map_err(JsErrorBox::from_err)?;
+    let cancel_handle = cancel_rid.and_then(|rid| {
+      state.borrow().resource_table.get::<CancelHandle>(rid).ok()
+    });
 
-  // Reuse the same adaptive sizing strategy as `op_read_all`.
-  let (min, maybe_max) = src.size_hint();
-  let mut buffer_strategy =
-    AdaptiveBufferStrategy::new_from_hint_u64(min, maybe_max);
+    // Reuse the same adaptive sizing strategy as `op_read_all`.
+    let (min, maybe_max) = src.size_hint();
+    let mut buffer_strategy =
+      AdaptiveBufferStrategy::new_from_hint_u64(min, maybe_max);
 
-  let result = async {
-    loop {
-      let read = src.clone().read(buffer_strategy.buffer_size());
-      let buf = match &cancel_handle {
-        Some(handle) => read.try_or_cancel(handle).await?,
-        None => read.await?,
-      };
-      if buf.is_empty() {
-        break; // source reached EOF
+    let result = async {
+      loop {
+        let read = src.clone().read(buffer_strategy.buffer_size());
+        let buf = match &cancel_handle {
+          Some(handle) => read.try_or_cancel(handle).await?,
+          None => read.await?,
+        };
+        if buf.is_empty() {
+          break; // source reached EOF
+        }
+        buffer_strategy.notify_read(buf.len());
+        let write = dst.clone().write_all(buf);
+        match &cancel_handle {
+          Some(handle) => write.try_or_cancel(handle).await?,
+          None => write.await?,
+        }
       }
-      buffer_strategy.notify_read(buf.len());
-      let write = dst.clone().write_all(buf);
-      match &cancel_handle {
-        Some(handle) => write.try_or_cancel(handle).await?,
-        None => write.await?,
-      }
+      Ok::<(), JsErrorBox>(())
     }
-    Ok::<(), JsErrorBox>(())
-  }
-  .await;
+    .await;
 
-  // Consume the cancel handle regardless of outcome so it doesn't linger in the
-  // resource table (the JS caller may also close it from its abort handler; both
-  // paths are idempotent).
-  if let Some(rid) = cancel_rid
-    && let Ok(handle) = state.borrow_mut().resource_table.take_any(rid)
-  {
-    handle.close();
-  }
+    // Consume the cancel handle regardless of outcome so it doesn't linger in the
+    // resource table (the JS caller may also close it from its abort handler; both
+    // paths are idempotent).
+    if let Some(rid) = cancel_rid
+      && let Ok(handle) = state.borrow_mut().resource_table.take_any(rid)
+    {
+      handle.close();
+    }
 
-  result
+    result
+  }
 }
 
 #[op2]
