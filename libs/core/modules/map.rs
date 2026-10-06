@@ -121,11 +121,8 @@ pub(crate) struct ModuleMap {
   pending_tla_waiters:
     RefCell<HashMap<ModuleId, Vec<v8::Global<v8::PromiseResolver>>>>,
   pending_mod_evaluation: Cell<bool>,
-  /// Set to `true` while inside `module.evaluate()` in `mod_evaluate`.
-  /// Used to suppress microtask checkpoints in `lazy_load_es_module_with_code`
-  /// during module evaluation, preventing premature draining of TLA-related microtasks.
-  evaluating_top_level: Cell<bool>,
-  /// Realm initialization inside an op must not drain the caller's microtasks.
+  /// Skip checkpoints during nested module evaluation or realm initialization
+  /// from an op, so the caller's microtasks are not drained prematurely.
   pub(crate) suppress_microtask_checkpoints: Cell<bool>,
   code_cache_ready_futs: TrackedFutures<Pin<Box<CodeCacheReadyFuture>>>,
   module_waker: AtomicWaker,
@@ -248,7 +245,6 @@ impl ModuleMap {
       pending_dyn_mod_evaluations: Default::default(),
       pending_tla_waiters: Default::default(),
       pending_mod_evaluation: Default::default(),
-      evaluating_top_level: Default::default(),
       suppress_microtask_checkpoints: Default::default(),
       code_cache_ready_futs: Default::default(),
       module_waker: Default::default(),

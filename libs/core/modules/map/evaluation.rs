@@ -77,9 +77,10 @@ impl ModuleMap {
         .unwrap_or_else(|_| Err(CoreErrorKind::ExecutionTerminated.into_box()))
     });
 
-    self.evaluating_top_level.set(true);
-    let Some(value) = module.evaluate(tc_scope) else {
-      self.evaluating_top_level.set(false);
+    let previous = self.suppress_microtask_checkpoints.replace(true);
+    let value = module.evaluate(tc_scope);
+    self.suppress_microtask_checkpoints.set(previous);
+    let Some(value) = value else {
       if tc_scope.has_terminated() || tc_scope.is_execution_terminating() {
         let undefined = v8::undefined(tc_scope).into();
         _ = sender
@@ -89,8 +90,6 @@ impl ModuleMap {
       }
       return Either::Right(receiver);
     };
-    self.evaluating_top_level.set(false);
-
     self.pending_mod_evaluation.set(true);
 
     // Update status after evaluating.
@@ -222,7 +221,9 @@ impl ModuleMap {
       // evaluation promise may never resolve because V8's internal async
       // module evaluation state machine relies on these microtasks being
       // processed.
-      tc_scope.perform_microtask_checkpoint();
+      if !self.suppress_microtask_checkpoints.get() {
+        tc_scope.perform_microtask_checkpoint();
+      }
     }
 
     Either::Right(receiver)
@@ -275,7 +276,7 @@ impl ModuleMap {
     // evaluation promise resolves for synchronous modules.
     //
     // However, skip the checkpoint when we are inside a top-level
-    // `module.evaluate()` call (i.e. `evaluating_top_level` is set), e.g.
+    // `module.evaluate()` call, e.g.
     // when a CJS `require()` of an ES module fires while V8 is evaluating
     // an async module graph. Draining microtasks at that point can resume
     // a suspended TLA dependency while its parent module is still in the
@@ -283,9 +284,7 @@ impl ModuleMap {
     // completion to the parent and the graph's evaluation promise stays
     // Pending forever. The module evaluated here has a synchronous graph
     // (checked above), so its promise settles without a checkpoint.
-    if !self.evaluating_top_level.get()
-      && !self.suppress_microtask_checkpoints.get()
-    {
+    if !self.suppress_microtask_checkpoints.get() {
       tc_scope.perform_microtask_checkpoint();
     }
 

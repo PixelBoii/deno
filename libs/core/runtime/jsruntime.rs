@@ -562,7 +562,7 @@ pub struct JsRuntimeState {
   // Failed initialization can leave bindings reachable from another context.
   // Retain their op contexts and embedder slots until isolate teardown.
   failed_realms: RefCell<Vec<JsRealm>>,
-  realm_template: RefCell<Option<Rc<RealmTemplate>>>,
+  realm_template: RealmTemplate,
   /// Accessed through [`JsRuntimeState::with_inspector`].
   inspector: RefCell<Option<Rc<JsRuntimeInspector>>>,
   has_inspector: Cell<bool>,
@@ -848,7 +848,7 @@ impl JsRuntime {
     suppress_microtask_checkpoints: bool,
   ) -> Result<JsRealm, CoreError> {
     let state_rc = Self::state_from(isolate);
-    let template = state_rc.realm_template.borrow().as_ref().unwrap().clone();
+    let template = &state_rc.realm_template;
     if template.will_snapshot {
       return Err(
         JsErrorBox::generic(
@@ -866,21 +866,10 @@ impl JsRuntime {
     )?;
     add_ext_source_maps(&mut state_rc.source_mapper.borrow_mut(), &sources);
     let main_realm = state_rc.realms.borrow()[0].clone();
-    let main_state = main_realm.0.state();
     let loader = options
       .module_loader
       .unwrap_or_else(|| main_realm.0.module_map.loader.borrow().clone());
-    let op_driver = Rc::new(OpDriverImpl::default());
-    let op_ctxs = main_state.op_ctxs.clone_for_realm(op_driver.clone());
-    let context_state = Rc::new(ContextState::new(
-      op_driver,
-      main_state.isolate.unwrap(),
-      op_ctxs,
-      main_state.op_method_decls.clone(),
-      main_state.methods_ctx_offset,
-      main_state.external_ops_tracker.clone(),
-      Default::default(),
-    ));
+    let context_state = Self::new_context_state(&main_realm);
     let realm = {
       v8::scope_with_context!(scope, isolate, main_realm.context());
       let security_token =
@@ -909,31 +898,7 @@ impl JsRuntime {
     module_map
       .suppress_microtask_checkpoints
       .set(suppress_microtask_checkpoints);
-    let result = (|| {
-      Self::execute_virtual_ops_module(
-        isolate,
-        realm.context(),
-        module_map.clone(),
-      );
-      Self::execute_builtin_sources(
-        isolate,
-        &realm,
-        &module_map,
-        &mut Vec::new(),
-      )?;
-      Self::store_js_callbacks(isolate, &realm, false);
-      module_map.add_residual_lazy_loaded_sources(
-        template.residual_lazy_js_sources,
-        template.residual_lazy_esm_sources,
-      );
-      Self::init_extension_js(
-        isolate,
-        &realm,
-        &module_map,
-        sources,
-        template.code_cache.clone(),
-      )
-    })();
+    let result = Self::init_realm_js(isolate, &realm, sources, template);
     module_map.suppress_microtask_checkpoints.set(false);
     if let Err(err) = result {
       state_rc
@@ -945,6 +910,55 @@ impl JsRuntime {
       return Err(err);
     }
     Ok(realm)
+  }
+
+  fn new_context_state(main_realm: &JsRealm) -> Rc<ContextState> {
+    let main_state = main_realm.0.state();
+    let op_driver = Rc::new(OpDriverImpl::default());
+    let op_ctxs = main_state.op_ctxs.clone_for_realm(op_driver.clone());
+
+    Rc::new(ContextState::new(
+      op_driver,
+      main_state.isolate.unwrap(),
+      op_ctxs,
+      main_state.op_method_decls.clone(),
+      main_state.methods_ctx_offset,
+      main_state.external_ops_tracker.clone(),
+      Default::default(),
+    ))
+  }
+
+  /// Runs the core and extension JS in a new realm.
+  fn init_realm_js(
+    isolate: &mut v8::Isolate,
+    realm: &JsRealm,
+    sources: LoadedSources,
+    template: &RealmTemplate,
+  ) -> Result<(), CoreError> {
+    let module_map = realm.0.module_map();
+    Self::execute_virtual_ops_module(
+      isolate,
+      realm.context(),
+      module_map.clone(),
+    );
+    Self::execute_builtin_sources(
+      isolate,
+      realm,
+      &module_map,
+      &mut Vec::new(),
+    )?;
+    Self::store_js_callbacks(isolate, realm, false);
+    module_map.add_residual_lazy_loaded_sources(
+      template.residual_lazy_js_sources,
+      template.residual_lazy_esm_sources,
+    );
+    Self::init_extension_js(
+      isolate,
+      realm,
+      &module_map,
+      sources,
+      template.code_cache.clone(),
+    )
   }
 
   // Bind a prepared ContextState to its V8 context and module map.
@@ -1144,6 +1158,15 @@ impl JsRuntime {
 
     add_ext_source_maps(&mut source_mapper, &sources);
 
+    let (op_decls, mut op_method_decls) =
+      extension_set::init_ops(crate::ops_builtin::BUILTIN_OPS, &mut extensions);
+    let (
+      global_template_middlewares,
+      global_object_middlewares,
+      additional_references,
+    ) = extension_set::get_middlewares_and_external_refs(&mut extensions);
+    let extension_names = extensions.iter().map(|e| e.name).collect();
+
     // ...now let's set up ` JsRuntimeState`, we'll need to set some fields
     // later, after `JsRuntime` is all set up...
     let waker = op_state.waker.clone();
@@ -1175,7 +1198,16 @@ impl JsRuntime {
       foreground_tasks: Default::default(),
       realms: Default::default(),
       failed_realms: Default::default(),
-      realm_template: Default::default(),
+      realm_template: RealmTemplate {
+        will_snapshot,
+        extensions,
+        global_template_middlewares,
+        global_object_middlewares,
+        transpiler: options.extension_transpiler,
+        code_cache: options.extension_code_cache.clone(),
+        residual_lazy_js_sources: options.residual_lazy_js_sources,
+        residual_lazy_esm_sources: options.residual_lazy_esm_sources,
+      },
       // Some fields are initialized later after isolate is created
       inspector: None.into(),
       has_inspector: false.into(),
@@ -1186,9 +1218,6 @@ impl JsRuntime {
 
     // ...now we're moving on to ops; set them up, create `OpCtx` for each op
     // and get ready to actually create V8 isolate...
-    let (op_decls, mut op_method_decls) =
-      extension_set::init_ops(crate::ops_builtin::BUILTIN_OPS, &mut extensions);
-
     let op_driver = Rc::new(OpDriverImpl::default());
     let op_metrics_factory_fn = options.op_metrics_factory_fn.take();
 
@@ -1203,12 +1232,6 @@ impl JsRuntime {
     );
 
     // ...ops are now almost fully set up; let's create a V8 isolate...
-    let (
-      global_template_middleware,
-      global_object_middlewares,
-      additional_references,
-    ) = extension_set::get_middlewares_and_external_refs(&mut extensions);
-
     // Capture the extension, op and source counts. `source_count` MUST mirror
     // the number of `v8::OneByteConst` external strings produced by
     // [`bindings::externalize_sources`] for the same `will_snapshot` value:
@@ -1216,7 +1239,6 @@ impl JsRuntime {
     // snapshot (where those scripts are externalized so consumed ones bake into
     // the snapshot as clean external sources). At runtime `lazy_loaded_js` is
     // not externalized here.
-    let extension_names = extensions.iter().map(|e| e.name).collect();
     let op_count = op_ctxs.len();
     let source_count = sources.js.len()
       + sources.esm.len()
@@ -1327,8 +1349,8 @@ impl JsRuntime {
       let _p_ctx = startup_phase_begin();
       let context = create_context(
         scope,
-        &global_template_middleware,
-        &global_object_middlewares,
+        &state_rc.realm_template.global_template_middlewares,
+        &state_rc.realm_template.global_object_middlewares,
         has_snapshot,
       );
       startup_phase_end(_p_ctx, "  V8 Context::from_snapshot");
@@ -1391,17 +1413,6 @@ impl JsRuntime {
     state_rc.realms.borrow_mut().push(main_realm.clone());
 
     // ...which allows us to create the `JsRuntime` instance...
-    *state_rc.realm_template.borrow_mut() = Some(Rc::new(RealmTemplate {
-      will_snapshot,
-      extensions,
-      global_template_middlewares: global_template_middleware,
-      global_object_middlewares,
-      transpiler: options.extension_transpiler,
-      code_cache: options.extension_code_cache.clone(),
-      residual_lazy_js_sources: options.residual_lazy_js_sources,
-      residual_lazy_esm_sources: options.residual_lazy_esm_sources,
-    }));
-
     let mut js_runtime = JsRuntime {
       inner: InnerIsolateState {
         will_snapshot,
@@ -1594,11 +1605,6 @@ impl JsRuntime {
     JsRealm::clone(&self.inner.main_realm)
   }
 
-  /// Returns handles to all initialized realms, starting with the main realm.
-  pub fn realms(&self) -> Vec<JsRealm> {
-    self.inner.state.realms.borrow().clone()
-  }
-
   #[inline]
   pub fn v8_isolate(&mut self) -> &mut v8::OwnedIsolate {
     &mut self.inner.v8_isolate
@@ -1661,7 +1667,7 @@ impl JsRuntime {
     context_global: &v8::Global<v8::Context>,
     module_map: Rc<ModuleMap>,
   ) {
-    v8::scope_with_context!(scope, &mut *isolate, context_global);
+    v8::scope_with_context!(scope, isolate, context_global);
     let context_local = v8::Local::new(scope, context_global);
     let context_state = JsRealm::state_from_scope(scope);
     let global = context_local.global(scope);
@@ -1693,7 +1699,7 @@ impl JsRuntime {
     module_map: &Rc<ModuleMap>,
     files_loaded: &mut Vec<&'static str>,
   ) -> Result<(), CoreError> {
-    jsrealm::context_scope!(scope, realm, &mut *isolate);
+    jsrealm::context_scope!(scope, realm, isolate);
 
     for source_file in &BUILTIN_SOURCES {
       let name = source_file.specifier.v8_string(scope).unwrap();
@@ -1766,7 +1772,7 @@ impl JsRuntime {
     for module in modules {
       // eprintln!("loading module: {module}");
       realm
-        .load_side_es_module_from_code(&mut *isolate, module.into(), None)
+        .load_side_es_module_from_code(isolate, module.into(), None)
         .await?;
     }
 
@@ -1776,7 +1782,7 @@ impl JsRuntime {
         Some(ext_code_cache) => {
           let specifier = ModuleSpecifier::parse(&source.specifier)?;
           realm.execute_script_with_cache(
-            &mut *isolate,
+            isolate,
             specifier,
             source.code,
             &|specifier, code| {
@@ -1789,7 +1795,7 @@ impl JsRuntime {
           )?;
         }
         _ => {
-          realm.execute_script(&mut *isolate, source.specifier, source.code)?;
+          realm.execute_script(isolate, source.specifier, source.code)?;
         }
       }
     }
@@ -1804,7 +1810,6 @@ impl JsRuntime {
         );
       };
 
-      let isolate = &mut *isolate;
       jsrealm::context_scope!(scope, realm, isolate);
       module_map.mod_evaluate_sync(scope, mod_id)?;
       let mut cx = Context::from_waker(Waker::noop());
@@ -1815,7 +1820,7 @@ impl JsRuntime {
 
     #[cfg(debug_assertions)]
     {
-      jsrealm::context_scope!(scope, realm, &mut *isolate);
+      jsrealm::context_scope!(scope, realm, isolate);
       module_map.check_all_modules_evaluated(scope)?;
     }
 
@@ -1878,7 +1883,7 @@ impl JsRuntime {
       wasm_instance_fn,
       wasm_instances_map,
     ) = {
-      jsrealm::context_scope!(scope, realm, &mut *isolate);
+      jsrealm::context_scope!(scope, realm, isolate);
       let context = realm.context();
       let context_local = v8::Local::new(scope, context);
       let global = context_local.global(scope);
@@ -3490,9 +3495,7 @@ impl JsRuntime {
     id: ModuleId,
   ) -> impl Future<Output = Result<(), CoreError>> + use<> {
     let isolate = &mut *self.inner.v8_isolate;
-    let realm = &self.inner.main_realm;
-    jsrealm::context_scope!(scope, realm, isolate);
-    self.inner.main_realm.0.module_map.mod_evaluate(scope, id)
+    self.inner.main_realm.mod_evaluate(isolate, id)
   }
 
   /// Asynchronously load specified module and all of its dependencies.

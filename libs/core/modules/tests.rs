@@ -3410,7 +3410,7 @@ async fn test_tla_with_tick_scheduled_no_hang() {
 /// evaluation promise stayed Pending forever and the runtime reported
 /// "Top-level await promise never resolved" at the dynamic import site.
 ///
-/// The fix is to mark `evaluating_top_level` true around
+/// The fix is to suppress microtask checkpoints around
 /// `module.evaluate()` in `dynamic_import_module_evaluate`, matching
 /// `mod_evaluate`, so nested lazy ESM loads skip their post-evaluate
 /// microtask checkpoint.

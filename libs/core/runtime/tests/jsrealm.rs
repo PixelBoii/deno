@@ -47,21 +47,30 @@ async fn test_two_realms() {
     (runtime.main_realm(), 1),
     (runtime.new_realm(Default::default()).unwrap(), 2),
   ];
+  let mut evaluations = Vec::new();
 
   for (realm, value) in &realms {
-    realm
-      .execute_script(
+    let id = realm
+      .load_side_es_module_from_code(
         runtime.v8_isolate(),
-        "test.js",
-        format!(
-          "globalThis.value = {value}; \
-           Deno.core.ops.op_yield().then(() => value += 1);"
+        "file:///test.js".into(),
+        Some(
+          format!(
+            "globalThis.value = {value}; \
+             await Deno.core.ops.op_yield(); value += 1;"
+          )
+          .into(),
         ),
       )
+      .await
       .unwrap();
+    evaluations.push(realm.mod_evaluate(runtime.v8_isolate(), id));
   }
 
   runtime.run_event_loop(Default::default()).await.unwrap();
+  for evaluation in evaluations {
+    evaluation.await.unwrap();
+  }
 
   for (realm, value) in &realms {
     assert_js(&mut runtime, realm, &format!("value === {}", value + 1));

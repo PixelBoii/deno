@@ -616,6 +616,8 @@ impl JsRealm {
 
   /// Evaluates an instantiated module in this realm. Poll the owning runtime's
   /// event loop to complete asynchronous evaluation.
+  ///
+  /// Panics if the module has not been instantiated.
   pub fn mod_evaluate(
     &self,
     isolate: &mut v8::Isolate,
@@ -639,7 +641,7 @@ impl JsRealm {
   /// This method is meant to be used when loading some utility code that
   /// might be later imported by the main module (ie. an entry point module).
   ///
-  /// User must call [`ModuleMap::mod_evaluate`] with returned `ModuleId`
+  /// User must call [`JsRealm::mod_evaluate`] with returned `ModuleId`
   /// manually after load is finished.
   // TODO(bartlomieju): create a separate method to execute code synchronously
   // from a loader? Would simplify JsRuntime code and not require running in
