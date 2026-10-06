@@ -614,6 +614,17 @@ impl JsRealm {
     self.0.module_map().instantiate_module(scope, id)
   }
 
+  /// Evaluates an instantiated module in this realm. Poll the owning runtime's
+  /// event loop to complete asynchronous evaluation.
+  pub fn mod_evaluate(
+    &self,
+    isolate: &mut v8::Isolate,
+    id: ModuleId,
+  ) -> impl std::future::Future<Output = Result<(), CoreError>> + use<> {
+    context_scope!(scope, self, isolate);
+    self.0.module_map.mod_evaluate(scope, id)
+  }
+
   pub(crate) fn modules_idle(&self) -> bool {
     self.0.module_map.dyn_module_evaluate_idle_counter.get() > 1
   }
@@ -633,7 +644,7 @@ impl JsRealm {
   // TODO(bartlomieju): create a separate method to execute code synchronously
   // from a loader? Would simplify JsRuntime code and not require running in
   // a `block_on`.
-  pub(crate) async fn load_side_es_module_from_code(
+  pub async fn load_side_es_module_from_code(
     &self,
     isolate: &mut v8::Isolate,
     specifier: String,

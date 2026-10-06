@@ -283,7 +283,9 @@ impl ModuleMap {
     // completion to the parent and the graph's evaluation promise stays
     // Pending forever. The module evaluated here has a synchronous graph
     // (checked above), so its promise settles without a checkpoint.
-    if !self.evaluating_top_level.get() {
+    if !self.evaluating_top_level.get()
+      && !self.suppress_microtask_checkpoints.get()
+    {
       tc_scope.perform_microtask_checkpoint();
     }
 

@@ -125,6 +125,8 @@ pub(crate) struct ModuleMap {
   /// Used to suppress microtask checkpoints in `lazy_load_es_module_with_code`
   /// during module evaluation, preventing premature draining of TLA-related microtasks.
   evaluating_top_level: Cell<bool>,
+  /// Realm initialization inside an op must not drain the caller's microtasks.
+  pub(crate) suppress_microtask_checkpoints: Cell<bool>,
   code_cache_ready_futs: TrackedFutures<Pin<Box<CodeCacheReadyFuture>>>,
   module_waker: AtomicWaker,
   data: RefCell<ModuleMapData>,
@@ -247,6 +249,7 @@ impl ModuleMap {
       pending_tla_waiters: Default::default(),
       pending_mod_evaluation: Default::default(),
       evaluating_top_level: Default::default(),
+      suppress_microtask_checkpoints: Default::default(),
       code_cache_ready_futs: Default::default(),
       module_waker: Default::default(),
       data: Default::default(),

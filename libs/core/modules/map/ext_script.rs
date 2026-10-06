@@ -123,7 +123,9 @@ impl ModuleMap {
     // TLA-related microtasks (e.g. `await` resume jobs from eagerly-
     // resolved async ops), which prevents the module evaluation promise
     // from settling correctly later.
-    if !self.evaluating_top_level.get() {
+    if !self.evaluating_top_level.get()
+      && !self.suppress_microtask_checkpoints.get()
+    {
       scope.perform_microtask_checkpoint();
     }
     let promise = v8::Local::<v8::Promise>::try_from(value).unwrap();
@@ -251,7 +253,9 @@ impl ModuleMap {
       let handle_local = v8::Local::new(scope, handle);
       if handle_local.get_status() == v8::ModuleStatus::Instantiated {
         let value = handle_local.evaluate(scope).unwrap();
-        if !self.evaluating_top_level.get() {
+        if !self.evaluating_top_level.get()
+          && !self.suppress_microtask_checkpoints.get()
+        {
           scope.perform_microtask_checkpoint();
         }
         let promise = v8::Local::<v8::Promise>::try_from(value).unwrap();
@@ -270,7 +274,9 @@ impl ModuleMap {
     let handle = self.get_handle(module_id).unwrap();
     let handle_local = v8::Local::new(scope, handle);
     let value = handle_local.evaluate(scope).unwrap();
-    if !self.evaluating_top_level.get() {
+    if !self.evaluating_top_level.get()
+      && !self.suppress_microtask_checkpoints.get()
+    {
       scope.perform_microtask_checkpoint();
     }
     let promise = v8::Local::<v8::Promise>::try_from(value).unwrap();
@@ -342,7 +348,9 @@ impl ModuleMap {
       // bindings in the temporal dead zone, so trigger evaluation here.
       if handle_local.get_status() == v8::ModuleStatus::Instantiated {
         let value = handle_local.evaluate(scope).unwrap();
-        if !self.evaluating_top_level.get() {
+        if !self.evaluating_top_level.get()
+          && !self.suppress_microtask_checkpoints.get()
+        {
           scope.perform_microtask_checkpoint();
         }
         let promise = v8::Local::<v8::Promise>::try_from(value).unwrap();
