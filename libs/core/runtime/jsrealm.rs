@@ -63,9 +63,6 @@ impl Hasher for IdentityHasher {
 /// We may wish to experiment with alternative drivers in the future.
 pub(crate) type OpDriverImpl = super::op_driver::FuturesUnorderedDriver;
 
-pub(crate) type UnrefedOps =
-  Rc<RefCell<HashSet<i32, BuildHasherDefault<IdentityHasher>>>>;
-
 /// Indices into the shared immediate_info buffer (Uint32Array).
 pub(crate) const IMM_IDX_COUNT: usize = 0;
 pub(crate) const IMM_IDX_REF_COUNT: usize = 1;
@@ -96,7 +93,8 @@ pub struct ContextState {
   // exposed to JS. Stands in for the [[Instance]] slot of the Wasm module
   // record from the ESM integration proposal (same trick as Node.js).
   pub(crate) wasm_instances_map: RefCell<Option<v8::Global<v8::Object>>>,
-  pub(crate) unrefed_ops: UnrefedOps,
+  pub(crate) unrefed_ops:
+    RefCell<HashSet<i32, BuildHasherDefault<IdentityHasher>>>,
   pub(crate) activity_traces: RuntimeActivityTraces,
   pub(crate) pending_ops: Rc<OpDriverImpl>,
   /// Consecutive ticks with a pending module but no reported top-level await.
@@ -201,7 +199,6 @@ impl ContextState {
     op_method_decls: Vec<OpMethodDecl>,
     methods_ctx_offset: usize,
     external_ops_tracker: ExternalOpsTracker,
-    unrefed_ops: UnrefedOps,
   ) -> Self {
     Self {
       isolate: Some(isolate_ptr),
@@ -229,7 +226,7 @@ impl ContextState {
       user_timer: Default::default(),
       timer_info: Box::new([0i32; 1]),
       active_timers: Default::default(),
-      unrefed_ops,
+      unrefed_ops: Default::default(),
       external_ops_tracker,
       ext_import_meta_proto: Default::default(),
       webidl_sequence_keys: Default::default(),

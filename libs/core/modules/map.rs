@@ -121,8 +121,8 @@ pub(crate) struct ModuleMap {
   pending_tla_waiters:
     RefCell<HashMap<ModuleId, Vec<v8::Global<v8::PromiseResolver>>>>,
   pending_mod_evaluation: Cell<bool>,
-  /// Skip checkpoints during nested module evaluation or realm initialization
-  /// from an op, so the caller's microtasks are not drained prematurely.
+  /// Skip checkpoints during nested module evaluation or realm initialization,
+  /// so the caller's microtasks are not drained prematurely.
   pub(crate) suppress_microtask_checkpoints: Cell<bool>,
   code_cache_ready_futs: TrackedFutures<Pin<Box<CodeCacheReadyFuture>>>,
   module_waker: AtomicWaker,

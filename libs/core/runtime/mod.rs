@@ -25,7 +25,6 @@ pub use jsrealm::ContextState;
 pub use jsrealm::JsRealm;
 pub use jsrealm::MODULE_MAP_SLOT_INDEX;
 pub(crate) use jsrealm::OpDriverImpl;
-pub(crate) use jsrealm::UnrefedOps;
 pub use jsruntime::CompiledWasmModuleStore;
 pub use jsruntime::CreateRealmOptions;
 pub use jsruntime::CrossIsolateStore;

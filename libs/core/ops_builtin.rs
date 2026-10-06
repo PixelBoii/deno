@@ -35,7 +35,6 @@ use crate::op2;
 use crate::ops_builtin_types;
 use crate::ops_builtin_v8;
 use crate::runtime::JsRealm;
-use crate::runtime::UnrefedOps;
 use crate::runtime::v8_static_strings;
 
 macro_rules! builtin_ops {
@@ -330,19 +329,21 @@ pub fn op_wasm_streaming_set_url(
 // Get a resource from the resource table and
 // handle unrefing the current task.
 fn get_resource(
-  state: Rc<RefCell<OpState>>,
-  unrefed_ops: &UnrefedOps,
+  scope: &v8::PinScope,
+  state: &OpState,
   rid: ResourceId,
   promise_id: i32,
 ) -> Result<Rc<dyn Resource>, JsErrorBox> {
-  let op_state = state.borrow();
-  let resource = op_state
+  let resource = state
     .resource_table
     .get_any(rid)
     .map_err(JsErrorBox::from_err)?;
 
-  if op_state.unrefed_resources.contains(&rid) {
-    unrefed_ops.borrow_mut().insert(promise_id);
+  if state.unrefed_resources.contains(&rid) {
+    JsRealm::state_from_scope(scope)
+      .unrefed_ops
+      .borrow_mut()
+      .insert(promise_id);
   }
 
   Ok(resource)
@@ -356,9 +357,9 @@ fn op_read(
   #[smi] rid: ResourceId,
   #[buffer] buf: JsBuffer,
 ) -> impl Future<Output = Result<u32, JsErrorBox>> + use<> {
-  let unrefed_ops = JsRealm::state_from_scope(scope).unrefed_ops.clone();
+  let resource = get_resource(scope, &state.borrow(), rid, promise_id);
   async move {
-    let resource = get_resource(state, &unrefed_ops, rid, promise_id)?;
+    let resource = resource?;
 
     let view = BufMutView::from(buf);
     resource.read_byob(view).await.map(|(n, _)| n as u32)
@@ -373,9 +374,9 @@ fn op_read_all(
   #[smi] promise_id: i32,
   #[smi] rid: ResourceId,
 ) -> impl Future<Output = Result<BytesMut, JsErrorBox>> + use<> {
-  let unrefed_ops = JsRealm::state_from_scope(scope).unrefed_ops.clone();
+  let resource = get_resource(scope, &state.borrow(), rid, promise_id);
   async move {
-    let resource = get_resource(state, &unrefed_ops, rid, promise_id)?;
+    let resource = resource?;
 
     let (min, maybe_max) = resource.size_hint();
     let mut buffer_strategy =
@@ -413,9 +414,9 @@ fn op_write(
   #[smi] rid: ResourceId,
   #[buffer] buf: JsBuffer,
 ) -> impl Future<Output = Result<u32, JsErrorBox>> + use<> {
-  let unrefed_ops = JsRealm::state_from_scope(scope).unrefed_ops.clone();
+  let resource = get_resource(scope, &state.borrow(), rid, promise_id);
   async move {
-    let resource = get_resource(state, &unrefed_ops, rid, promise_id)?;
+    let resource = resource?;
 
     let view = BufView::from(buf);
     let resp = resource.write(view).await?;
@@ -496,10 +497,10 @@ fn op_pipe(
   #[smi] dst_rid: ResourceId,
   #[smi] cancel_rid: Option<ResourceId>,
 ) -> impl Future<Output = Result<(), JsErrorBox>> + use<> {
-  let unrefed_ops = JsRealm::state_from_scope(scope).unrefed_ops.clone();
+  // Unref bookkeeping is keyed off the source, since that is what we await on.
+  let src = get_resource(scope, &state.borrow(), src_rid, promise_id);
   async move {
-    // Unref bookkeeping is keyed off the source, since that is what we await on.
-    let src = get_resource(state.clone(), &unrefed_ops, src_rid, promise_id)?;
+    let src = src?;
     let dst = state
       .borrow()
       .resource_table
