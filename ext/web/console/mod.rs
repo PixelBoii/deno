@@ -1425,6 +1425,23 @@ impl Console {
     data: v8::Local<'s, v8::Value>,
     properties: v8::Local<'s, v8::Value>,
   ) -> R<()> {
+    // `is_object()` is true for functions in V8 (IsJSReceiver), so functions
+    // must be excluded explicitly to take the log path (old JS keyed on
+    // `typeof data !== "object"`): `console.table(fn)` prints `[Function: fn]`.
+    if data.is_null() || !data.is_object() || data.is_function() {
+      // Non-tabular data is just logged, with the remaining arguments
+      // taking part in formatting exactly as in `log`.
+      let mut ctx = self.console_ctx(scope, intr, false);
+      let args: &[v8::Local<'s, v8::Value>] = if properties.is_undefined() {
+        &[data]
+      } else {
+        &[data, properties]
+      };
+      let s = inspect_args_impl(scope, intr, &mut ctx, args)?;
+      self.print(scope, &format!("{s}\n"), 1);
+      return Ok(());
+    }
+
     // Validate `properties`.
     let properties: Option<Vec<v8::Local<'s, v8::Value>>> = if properties
       .is_undefined()
@@ -1445,16 +1462,6 @@ impl Console {
       return Err(JsErr(v8::Global::new(scope, exc)));
     };
 
-    // `is_object()` is true for functions in V8 (IsJSReceiver), so functions
-    // must be excluded explicitly to take the log path (old JS keyed on
-    // `typeof data !== "object"`): `console.table(fn)` prints `[Function: fn]`.
-    if data.is_null() || !data.is_object() || data.is_function() {
-      // this.log(data)
-      let mut ctx = self.console_ctx(scope, intr, false);
-      let s = inspect_args_impl(scope, intr, &mut ctx, &[data])?;
-      self.print(scope, &format!("{s}\n"), 1);
-      return Ok(());
-    }
     let data_obj = v8::Local::<v8::Object>::try_from(data).unwrap();
 
     // stringifyValue: inspectValueWithQuotes with depth 1, compact, no break.
