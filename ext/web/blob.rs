@@ -334,7 +334,9 @@ pub fn op_blob_revoke_object_url(
   state: &mut OpState,
   #[string] url: &str,
 ) -> Result<(), BlobError> {
-  let url = Url::parse(url)?;
+  let Ok(url) = Url::parse(url) else {
+    return Ok(());
+  };
   let blob_store = state.borrow::<Arc<dyn BlobStoreTrait>>();
   blob_store.remove_object_url(&url);
   Ok(())
