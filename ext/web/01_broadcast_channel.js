@@ -46,28 +46,33 @@ let rid = null;
 let recvPromise = null;
 let refedBroadcastChannelsCount = 0;
 
-async function recv() {
+async function recv(receiver) {
   while (channels.length > 0) {
-    recvPromise = op_broadcast_recv(rid);
+    const promise = op_broadcast_recv(receiver);
+    recvPromise = promise;
     if (refedBroadcastChannelsCount === 0) {
       core.unrefOpPromise(recvPromise);
     }
-    const message = await recvPromise;
-    recvPromise = null;
+    const message = await promise;
+    if (recvPromise === promise) recvPromise = null;
 
     if (message === null) {
       break;
     }
 
     const { 0: name, 1: data, 2: sabId } = message;
+    if (rid !== receiver) {
+      if (sabId !== 0) op_broadcast_free(sabId);
+      break;
+    }
     dispatch(null, name, new Uint8Array(data), sabId);
     // The SharedArrayBuffer backing stores (if any) have been deserialized for
     // every local channel above; release the stash entry.
     if (sabId !== 0) op_broadcast_free(sabId);
   }
 
-  core.close(rid);
-  rid = null;
+  core.close(receiver);
+  if (rid === receiver) rid = null;
 }
 
 function dispatch(source, name, data, sabId) {
@@ -130,7 +135,7 @@ class BroadcastChannel extends EventTarget {
       // Create the rid immediately, otherwise there is a time window (and a
       // race condition) where messages can get lost, because recv() is async.
       rid = op_broadcast_subscribe();
-      recv();
+      recv(rid);
     }
   }
 
@@ -151,7 +156,9 @@ class BroadcastChannel extends EventTarget {
     // Serialize the message, carrying any SharedArrayBuffer backing stores
     // out-of-band (referenced by `sabId`) so the message can be deserialized by
     // an arbitrary number of receivers. `sabId` is 0 when there are none.
-    const { 0: data, 1: sabId } = op_broadcast_serialize(message, null);
+    const { 0: data, 1: sabId } = op_broadcast_serialize(message, (message) => {
+      throw new DOMException(message, "DataCloneError");
+    });
 
     // Send to other listeners in this VM.
     dispatch(this, this[_name], data, sabId);
@@ -201,6 +208,7 @@ class BroadcastChannel extends EventTarget {
     ArrayPrototypeSplice(channels, index, 1);
     if (channels.length === 0 && rid !== null) {
       op_broadcast_unsubscribe(rid);
+      rid = null;
     }
   }
 
