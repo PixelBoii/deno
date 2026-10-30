@@ -110,6 +110,11 @@ use tower::retry;
 #[derive(Clone)]
 pub struct Options {
   pub user_agent: String,
+  /// Optional raw HTTP backend for the default fetch client. URL permission
+  /// checks, cancellation and content decoding remain in this extension.
+  /// The embedder owns connector-level TLS, proxy and resolved-address policy.
+  /// Explicit Deno.createHttpClient resources retain their selected backend.
+  pub http_transport: Option<Arc<dyn HttpTransport>>,
   pub root_cert_store_provider: Option<Arc<dyn RootCertStoreProvider>>,
   pub proxy: Option<Proxy>,
   /// A callback to customize HTTP client configuration.
@@ -144,6 +149,7 @@ impl Default for Options {
   fn default() -> Self {
     Self {
       user_agent: "".to_string(),
+      http_transport: None,
       root_cert_store_provider: None,
       proxy: None,
       client_builder_hook: None,
@@ -250,6 +256,9 @@ pub enum FetchError {
   RequestBuilderHook(JsErrorBox),
   #[class(inherit)]
   #[error(transparent)]
+  HttpTransport(JsErrorBox),
+  #[class(inherit)]
+  #[error(transparent)]
   Io(#[from] std::io::Error),
   #[class(generic)]
   #[error(transparent)]
@@ -280,6 +289,35 @@ impl From<deno_fs::FsError> for FetchError {
 
 pub type CancelableResponseFuture =
   Pin<Box<dyn Future<Output = CancelableResponseResult>>>;
+
+pub type HttpTransportFuture = Pin<
+  Box<dyn Future<Output = Result<http::Response<ResBody>, JsErrorBox>> + Send>,
+>;
+
+/// An embedder-supplied HTTP transport. Bodies are encoded wire bytes; fetch
+/// applies its normal content-decoding policy to the returned response.
+pub trait HttpTransport: Send + Sync {
+  fn send(&self, request: http::Request<ReqBody>) -> HttpTransportFuture;
+}
+
+async fn send_http_request(
+  client: Client,
+  mut request: http::Request<ReqBody>,
+  transport: Option<Arc<dyn HttpTransport>>,
+) -> Result<http::Response<ResBody>, FetchError> {
+  if let Some(transport) = transport {
+    client.inject_common_headers(&mut request);
+    request.headers_mut().entry(ACCEPT).or_insert(STAR_STAR);
+    let skip = prepare_decompression_request(&mut request);
+    let response = transport
+      .send(request)
+      .await
+      .map_err(FetchError::HttpTransport)?;
+    Ok(decompress_response(response, skip))
+  } else {
+    client.send(request).await.map_err(FetchError::from)
+  }
+}
 
 pub trait FetchHandler {
   // Return the result of the fetch request consisting of a tuple of the
@@ -538,6 +576,10 @@ pub fn op_fetch(
       }
 
       let options = state.borrow::<Options>();
+      let http_transport = client_rid
+        .is_none()
+        .then(|| options.http_transport.clone())
+        .flatten();
       if let Some(request_builder_hook) = options.request_builder_hook {
         request_builder_hook(&mut request)
           .map_err(FetchError::RequestBuilderHook)?;
@@ -547,9 +589,7 @@ pub fn op_fetch(
       let cancel_handle_ = cancel_handle.clone();
 
       let fut = async move {
-        client
-          .send(request)
-          .map_err(Into::into)
+        send_http_request(client, request, http_transport)
           .or_cancel(cancel_handle_)
           .await
       };
@@ -1276,38 +1316,44 @@ where
   }
 
   fn call(&mut self, mut req: http::Request<ReqBody>) -> Self::Future {
-    // Range responses may contain compressed byte ranges that cannot be
-    // transparently decoded as a complete representation.
-    let skip_decompression = req.headers().contains_key(RANGE)
-      || req.headers().get(ACCEPT_ENCODING).is_some_and(|value| {
-        value.as_bytes().eq_ignore_ascii_case(b"identity")
-      });
-    if req.headers().contains_key(RANGE) {
-      req
-        .headers_mut()
-        .entry(ACCEPT_ENCODING)
-        .or_insert_with(|| HeaderValue::from_static("identity"));
-    } else {
-      req
-        .headers_mut()
-        .entry(ACCEPT_ENCODING)
-        .or_insert_with(|| HeaderValue::from_static("gzip,br"));
-    }
+    let skip_decompression = prepare_decompression_request(&mut req);
 
     let fut = self.inner.call(req);
     Box::pin(async move {
       let resp = fut.await?;
-      Ok(decompress_response(resp, skip_decompression))
+      Ok(decompress_response(
+        resp.map(box_raw_body),
+        skip_decompression,
+      ))
     })
   }
 }
 
+fn prepare_decompression_request(req: &mut http::Request<ReqBody>) -> bool {
+  // Partial encoded representations cannot be decoded as a complete stream.
+  let skip = req.headers().contains_key(RANGE)
+    || req
+      .headers()
+      .get(ACCEPT_ENCODING)
+      .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"identity"));
+  let encoding = if req.headers().contains_key(RANGE) {
+    "identity"
+  } else {
+    "gzip,br"
+  };
+  req
+    .headers_mut()
+    .entry(ACCEPT_ENCODING)
+    .or_insert_with(|| HeaderValue::from_static(encoding));
+  skip
+}
+
 fn decompress_response(
-  resp: http::Response<Incoming>,
+  resp: http::Response<ResBody>,
   skip_decompression: bool,
 ) -> http::Response<ResBody> {
   if skip_decompression {
-    return resp.map(box_raw_body);
+    return resp;
   }
 
   // Some servers advertise a compressed empty body. A valid gzip/br stream is
@@ -1319,7 +1365,7 @@ fn decompress_response(
     .and_then(|v| v.parse::<u64>().ok())
     == Some(0);
   if is_empty {
-    return resp.map(box_raw_body);
+    return resp;
   }
 
   match resp
@@ -1329,7 +1375,7 @@ fn decompress_response(
   {
     Some(DecodeKind::Gzip) => decode_response(resp, DecodeKind::Gzip),
     Some(DecodeKind::Brotli) => decode_response(resp, DecodeKind::Brotli),
-    _ => resp.map(box_raw_body),
+    _ => resp,
   }
 }
 
@@ -1360,7 +1406,7 @@ enum DecodeKind {
 pub struct BodyDecoded;
 
 fn decode_response(
-  resp: http::Response<Incoming>,
+  resp: http::Response<ResBody>,
   kind: DecodeKind,
 ) -> http::Response<ResBody> {
   // Per the fetch spec, handling content codings only decodes the body; the

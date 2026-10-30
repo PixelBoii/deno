@@ -952,3 +952,75 @@ fn checkout_tracker_counts_each_checkout_once() {
   assert_eq!(usage.load(SeqCst), 1, "repeated polls must not re-count");
   assert!(!reused.0.load(SeqCst), "first use is not a reuse");
 }
+
+// No sockets: the optional backend must run through the same header and decoding
+// middleware as the default connector, retaining encoded response metadata.
+struct EncodedTransport;
+impl crate::HttpTransport for EncodedTransport {
+  fn send(
+    &self,
+    request: http::Request<crate::ReqBody>,
+  ) -> crate::HttpTransportFuture {
+    Box::pin(async move {
+      assert_eq!(request.headers()["user-agent"], "fetch/test");
+      assert_eq!(request.headers()["accept"], "*/*");
+      assert_eq!(request.headers()[ACCEPT_ENCODING], "gzip,br");
+      Ok(
+        http::Response::builder()
+          .header(CONTENT_ENCODING, "gzip")
+          .header(CONTENT_LENGTH, GZIP_HELLO_FROM_SERVER.len())
+          .body(
+            http_body_util::Full::new(Bytes::from_static(
+              GZIP_HELLO_FROM_SERVER,
+            ))
+            .map_err(|never| match never {})
+            .boxed(),
+          )
+          .unwrap(),
+      )
+    })
+  }
+}
+
+#[tokio::test]
+async fn test_embedder_transport_preserves_fetch_decoding() {
+  let request = http::Request::builder()
+    .uri("https://example.test/")
+    .body(crate::ReqBody::empty())
+    .unwrap();
+  let response = crate::send_http_request(
+    create_http_test_client(),
+    request,
+    Some(Arc::new(EncodedTransport)),
+  )
+  .await
+  .unwrap();
+  assert!(response.extensions().get::<crate::BodyDecoded>().is_some());
+  assert_eq!(response.headers()[CONTENT_ENCODING], "gzip");
+  assert_eq!(
+    response.headers()[CONTENT_LENGTH],
+    GZIP_HELLO_FROM_SERVER.len().to_string()
+  );
+  assert_eq!(
+    response.collect().await.unwrap().to_bytes(),
+    "hello from server"
+  );
+}
+
+#[test]
+fn test_embedder_transport_range_and_identity() {
+  for range in [false, true] {
+    let mut request = http::Request::builder()
+      .uri("https://example.test/")
+      .header(ACCEPT_ENCODING, "identity")
+      .body(crate::ReqBody::empty())
+      .unwrap();
+    if range {
+      request
+        .headers_mut()
+        .insert(RANGE, HeaderValue::from_static("bytes=0-9"));
+    }
+    assert!(crate::prepare_decompression_request(&mut request));
+    assert_eq!(request.headers()[ACCEPT_ENCODING], "identity");
+  }
+}
