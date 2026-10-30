@@ -614,6 +614,8 @@ pub struct FetchResponse {
   /// `headers` describe the encoded wire body, not the body behind
   /// `response_rid`.
   pub body_decoded: bool,
+  /// Negotiated protocol for browser resource timing; empty on transport errors.
+  pub http_version: String,
   /// This field is populated if some error occurred which needs to be
   /// reconstructed in the JS side to set the error _cause_.
   /// In the tuple, the first element is an error message and the second one is
@@ -669,6 +671,14 @@ pub async fn op_fetch_send(
   };
 
   let status = res.status();
+  let http_version = match res.version() {
+    http::Version::HTTP_10 => "http/1.0",
+    http::Version::HTTP_11 => "http/1.1",
+    http::Version::HTTP_2 => "h2",
+    http::Version::HTTP_3 => "h3",
+    _ => "",
+  }
+  .to_owned();
   let url = request.url.into();
   let mut res_headers = Vec::new();
   for (key, val) in res.headers().iter() {
@@ -691,6 +701,7 @@ pub async fn op_fetch_send(
     response_rid,
     content_length,
     body_decoded,
+    http_version,
     error: None,
   })
 }

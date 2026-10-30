@@ -4,14 +4,15 @@
 const { core, primordials } = __bootstrap;
 const { op_now, op_time_origin } = core.ops;
 const {
-  ArrayIsArray,
   ArrayPrototypeFilter,
   ArrayPrototypeIncludes,
   ArrayPrototypeIndexOf,
   ArrayPrototypePush,
   ArrayPrototypeSlice,
+  ArrayPrototypeSort,
   ArrayPrototypeSplice,
   ObjectKeys,
+  ObjectFreeze,
   ObjectPrototypeIsPrototypeOf,
   queueMicrotask,
   ReflectHas,
@@ -47,25 +48,100 @@ function getCreateFilteredInspectProxy() {
   return _createFilteredInspectProxy;
 }
 
-const { EventTarget } = core.loadExtScript("ext:deno_web/02_event.js");
+const { EventTarget, Event, defineEventHandler, dispatch, setIsTrusted } = core.loadExtScript("ext:deno_web/02_event.js");
 const { DOMException } = core.loadExtScript("ext:deno_web/01_dom_exception.js");
 
 const illegalConstructorKey = Symbol("illegalConstructorKey");
 let performanceEntries = [];
 let timeOrigin;
+let timeOriginOffset = 0;
+let timePrecision = 0;
 const performanceObservers = [];
+let supportedEntryTypes = ObjectFreeze(["mark", "measure"]);
+let queueObserverTask = queueMicrotask;
+let reportObserverError = (error) => core.reportUnhandledException(error);
+let resourceTimingBufferSize = 250;
+let resourceTimingCount = 0;
+let resourceTimingTaskQueued = false;
+let resourceTimingSecondaryBuffer = [];
 
 const hrU8 = new Uint8Array(8);
 const hr = new Uint32Array(TypedArrayPrototypeGetBuffer(hrU8));
 
-function setTimeOrigin() {
+function setTimeOrigin(options = undefined) {
   op_time_origin(hrU8);
   timeOrigin = hr[0] * 1000 + hr[1] / 1e6;
+  timeOriginOffset = 0;
+  timePrecision = options?.precision ?? 0;
+  if (options?.reset) {
+    op_now(hrU8);
+    timeOriginOffset = hr[0] * 1000 + hr[1] / 1e6 - (options.elapsed ?? 0);
+    timeOrigin += timeOriginOffset;
+  }
 }
 
 function now() {
   op_now(hrU8);
-  return hr[0] * 1000 + hr[1] / 1e6;
+  const value = hr[0] * 1000 + hr[1] / 1e6 - timeOriginOffset;
+  return timePrecision ? Math.floor(value / timePrecision) * timePrecision : value;
+}
+
+// Embedders can supply their event loop and additional entry types. Deno keeps
+// its existing defaults when these hooks are not installed.
+function configurePerformanceTimeline(options) {
+  supportedEntryTypes = ObjectFreeze(ArrayPrototypeSort([...options.entryTypes]));
+  queueObserverTask = options.queueTask;
+  reportObserverError = options.reportError;
+}
+
+function createPerformanceEntry(name, type, startTime, duration) {
+  return new PerformanceEntry(name, type, startTime, duration, illegalConstructorKey);
+}
+
+function updatePerformanceEntry(entry, duration) {
+  webidl.assertBranded(entry, PerformanceEntryPrototype);
+  entry[_duration] = duration;
+}
+
+function recordPerformanceEntry(entry, notify = true) {
+  webidl.assertBranded(entry, PerformanceEntryPrototype);
+  // Observers still receive entries when the resource timeline buffer is full.
+  if (notify) queuePerformanceEntry(entry);
+  if (entry.entryType === "resource") {
+    if (resourceTimingCount >= resourceTimingBufferSize || resourceTimingTaskQueued) {
+      ArrayPrototypePush(resourceTimingSecondaryBuffer, entry);
+      if (!resourceTimingTaskQueued) {
+        resourceTimingTaskQueued = true;
+        queueObserverTask(drainResourceTimingBuffer);
+      }
+      return;
+    }
+    resourceTimingCount++;
+  }
+  ArrayPrototypePush(performanceEntries, entry);
+}
+
+function drainResourceTimingBuffer() {
+  while (resourceTimingSecondaryBuffer.length > 0) {
+    const before = resourceTimingSecondaryBuffer.length;
+    if (resourceTimingCount >= resourceTimingBufferSize) {
+      const event = new Event("resourcetimingbufferfull");
+      setIsTrusted(event, true);
+      dispatch(performance, event);
+    }
+    while (resourceTimingSecondaryBuffer.length && resourceTimingCount < resourceTimingBufferSize) {
+      ArrayPrototypePush(performanceEntries, resourceTimingSecondaryBuffer[0]);
+      ArrayPrototypeSplice(resourceTimingSecondaryBuffer, 0, 1);
+      resourceTimingCount++;
+    }
+    // The handler did not free space. Discard overflow rather than loop forever.
+    if (resourceTimingSecondaryBuffer.length >= before) resourceTimingSecondaryBuffer = [];
+  }
+  resourceTimingTaskQueued = false;
+}
+
+function sortedEntries(entries) {
+  return ArrayPrototypeSort(ArrayPrototypeSlice(entries), (a, b) => a.startTime - b.startTime);
 }
 
 webidl.converters["PerformanceMarkOptions"] = webidl
@@ -168,12 +244,12 @@ function filterByNameType(
   name,
   type,
 ) {
-  return ArrayPrototypeFilter(
+  return sortedEntries(ArrayPrototypeFilter(
     performanceEntries,
     (entry) =>
-      (name ? entry.name === name : true) &&
-      (type ? entry.entryType === type : true),
-  );
+      (name !== undefined ? entry.name === name : true) &&
+      (type !== undefined ? entry.entryType === type : true),
+  ));
 }
 
 const _name = Symbol("[[name]]");
@@ -395,16 +471,20 @@ function scheduleObserverCallback(observer) {
     return;
   }
   observer[_scheduled] = true;
-  queueMicrotask(() => {
+  queueObserverTask(() => {
     observer[_scheduled] = false;
     const entries = observer[_buffer];
     observer[_buffer] = [];
     if (entries.length > 0) {
       const entryList = new PerformanceObserverEntryList(
-        entries,
+        sortedEntries(entries),
         illegalConstructorKey,
       );
-      observer[_callback](entryList, observer);
+      try {
+        observer[_callback].call(observer, entryList, observer, { droppedEntriesCount: 0 });
+      } catch (error) {
+        reportObserverError(error, observer[_callback]);
+      }
     }
   });
 }
@@ -434,7 +514,7 @@ class PerformanceObserverEntryList {
 
   getEntries() {
     webidl.assertBranded(this, PerformanceObserverEntryListPrototype);
-    return ArrayPrototypeSlice(this[_entries]);
+    return sortedEntries(this[_entries]);
   }
 
   getEntriesByType(type) {
@@ -473,16 +553,18 @@ const _callback = Symbol("[[callback]]");
 const _entryTypes = Symbol("[[entryTypes]]");
 const _buffer = Symbol("[[buffer]]");
 const _scheduled = Symbol("[[scheduled]]");
+const _observerType = Symbol("[[observerType]]");
 
 class PerformanceObserver {
   static get supportedEntryTypes() {
-    return ["mark", "measure"];
+    return supportedEntryTypes;
   }
 
   [_callback] = null;
   [_entryTypes] = [];
   [_buffer] = [];
   [_scheduled] = false;
+  [_observerType] = undefined;
 
   constructor(callback) {
     const prefix = "Failed to construct 'PerformanceObserver'";
@@ -496,17 +578,13 @@ class PerformanceObserver {
     this[_callback] = callback;
   }
 
-  observe(options = { __proto__: null }) {
+  observe(options) {
     webidl.assertBranded(this, PerformanceObserverPrototype);
     const prefix = "Failed to execute 'observe' on 'PerformanceObserver'";
 
-    if (options === undefined || options === null) {
-      throw new TypeError(
-        `${prefix}: 1 argument required, but only 0 present.`,
-      );
-    }
-
-    const { entryTypes, type } = options;
+    webidl.requiredArguments(arguments.length, 1, prefix);
+    options = options ?? {};
+    let { entryTypes, type } = options;
 
     if (entryTypes !== undefined && type !== undefined) {
       throw new TypeError(
@@ -520,11 +598,15 @@ class PerformanceObserver {
       );
     }
 
+    const mode = entryTypes !== undefined ? "multiple" : "single";
+    if (this[_observerType] !== undefined && this[_observerType] !== mode) {
+      throw new DOMException(`${prefix}: Cannot change observer type.`, "InvalidModificationError");
+    }
+    this[_observerType] = mode;
+
     let types;
     if (entryTypes !== undefined) {
-      if (!ArrayIsArray(entryTypes)) {
-        throw new TypeError(`${prefix}: 'entryTypes' must be an array.`);
-      }
+      entryTypes = webidl.converters["sequence<DOMString>"](entryTypes, prefix, "entryTypes");
       types = ArrayPrototypeFilter(
         entryTypes,
         (t) =>
@@ -534,16 +616,17 @@ class PerformanceObserver {
         return;
       }
     } else {
+      type = webidl.converters.DOMString(type, prefix, "type");
       if (
         !ArrayPrototypeIncludes(PerformanceObserver.supportedEntryTypes, type)
       ) {
         return;
       }
-      types = [type];
+      types = ArrayPrototypeIncludes(this[_entryTypes], type)
+        ? this[_entryTypes] : [...this[_entryTypes], type];
     }
 
     this[_entryTypes] = types;
-    this[_buffer] = [];
 
     if (!ArrayPrototypeIncludes(performanceObservers, this)) {
       ArrayPrototypePush(performanceObservers, this);
@@ -651,16 +734,19 @@ class Performance extends EventTarget {
       performanceEntries,
       (entry) => entry.entryType !== "resource",
     );
+    resourceTimingCount = 0;
   }
 
-  setResourceTimingBufferSize(_maxSize) {
+  setResourceTimingBufferSize(maxSize) {
     webidl.assertBranded(this, PerformancePrototype);
     webidl.requiredArguments(
       arguments.length,
       1,
       "Failed to execute 'setResourceTimingBufferSize' on 'Performance'",
     );
-    // This is a noop in Deno as we don't have resource timing entries
+    resourceTimingBufferSize = webidl.converters["unsigned long"](
+      maxSize, "Failed to execute 'setResourceTimingBufferSize' on 'Performance'", "Argument 1",
+    );
   }
 
   getEntries() {
@@ -840,6 +926,7 @@ class Performance extends EventTarget {
 }
 webidl.configureInterface(Performance);
 const PerformancePrototype = Performance.prototype;
+defineEventHandler(PerformancePrototype, "resourcetimingbufferfull");
 
 webidl.converters["Performance"] = webidl.createInterfaceConverter(
   "Performance",
@@ -857,5 +944,10 @@ return {
   PerformanceObserver,
   PerformanceObserverEntryList,
   setTimeOrigin,
+  configurePerformanceTimeline,
+  createPerformanceEntry,
+  updatePerformanceEntry,
+  recordPerformanceEntry,
+  queuePerformanceEntry,
 };
 })();
