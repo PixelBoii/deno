@@ -671,6 +671,22 @@ pub fn op_decode<'s, 'i>(
   }
 }
 
+/// A broadcast backing store retains the originating agent-cluster label.
+/// Each receiver must authorize that label before constructing a shared view.
+#[derive(Clone)]
+pub struct BroadcastSharedArrayBuffer {
+  pub backing_store: v8::SharedRef<v8::BackingStore>,
+  pub agent_cluster: Option<u64>,
+}
+
+fn shared_memory_cluster(scope: &mut v8::PinScope) -> Result<Option<u64>, ()> {
+  let state = JsRuntime::state_from(scope);
+  match state.shared_array_buffer_policy {
+    Some(policy) => policy(scope).map(Some).ok_or(()),
+    None => Ok(None),
+  }
+}
+
 struct SerializeDeserialize<'a> {
   host_objects: Option<v8::Local<'a, v8::Array>>,
   error_callback: Option<v8::Local<'a, v8::Function>>,
@@ -686,7 +702,7 @@ struct SerializeDeserialize<'a> {
   // its index is written as the transfer id. On deserialize, the transfer id
   // indexes into this list.
   broadcast_shared_array_buffers:
-    Option<Rc<RefCell<Vec<v8::SharedRef<v8::BackingStore>>>>>,
+    Option<Rc<RefCell<Vec<BroadcastSharedArrayBuffer>>>>,
 }
 
 impl v8::ValueSerializerImpl for SerializeDeserialize<'_> {
@@ -715,27 +731,32 @@ impl v8::ValueSerializerImpl for SerializeDeserialize<'_> {
     scope: &mut v8::PinScope<'s, 'i>,
     shared_array_buffer: v8::Local<'s, v8::SharedArrayBuffer>,
   ) -> Option<u32> {
-    // Broadcast mode: carry the backing store out-of-band and use its index in
-    // the list as the transfer id.
-    if let Some(broadcast) = &self.broadcast_shared_array_buffers {
-      let backing_store = shared_array_buffer.get_backing_store();
-      let mut list = broadcast.borrow_mut();
-      let id = list.len() as u32;
-      list.push(backing_store);
-      return Some(id);
-    }
     if self.for_storage {
       return None;
     }
-    let state = JsRuntime::state_from(scope);
-    match &state.shared_array_buffer_store {
-      Some(shared_array_buffer_store) => {
-        let backing_store = shared_array_buffer.get_backing_store();
-        let id = shared_array_buffer_store.insert(backing_store);
-        Some(id)
-      }
-      _ => None,
+    let Ok(cluster) = shared_memory_cluster(scope) else {
+      let message = v8::String::new(
+        scope,
+        "SharedArrayBuffer requires cross-origin isolation",
+      )?;
+      self.throw_data_clone_error(scope, message);
+      return None;
+    };
+    let backing_store = shared_array_buffer.get_backing_store();
+    if let Some(broadcast) = &self.broadcast_shared_array_buffers {
+      let mut list = broadcast.borrow_mut();
+      let id = list.len() as u32;
+      list.push(BroadcastSharedArrayBuffer {
+        backing_store,
+        agent_cluster: cluster,
+      });
+      return Some(id);
     }
+    let state = JsRuntime::state_from(scope);
+    state
+      .shared_array_buffer_store
+      .as_ref()
+      .map(|store| store.insert_tagged(backing_store, cluster))
   }
 
   fn get_wasm_module_transfer_id<'s, 'i>(
@@ -810,28 +831,31 @@ impl v8::ValueDeserializerImpl for SerializeDeserialize<'_> {
     scope: &mut v8::PinScope<'s, 'i>,
     transfer_id: u32,
   ) -> Option<v8::Local<'s, v8::SharedArrayBuffer>> {
-    // Broadcast mode: the transfer id indexes into the out-of-band backing
-    // store list carried alongside the serialized bytes.
-    if let Some(broadcast) = &self.broadcast_shared_array_buffers {
-      let backing_store = broadcast.borrow().get(transfer_id as usize)?.clone();
-      return Some(v8::SharedArrayBuffer::with_backing_store(
-        scope,
-        &backing_store,
-      ));
-    }
     if self.for_storage {
       return None;
     }
-    let state = JsRuntime::state_from(scope);
-    match &state.shared_array_buffer_store {
-      Some(shared_array_buffer_store) => {
-        let backing_store = shared_array_buffer_store.take(transfer_id)?;
-        let shared_array_buffer =
-          v8::SharedArrayBuffer::with_backing_store(scope, &backing_store);
-        Some(shared_array_buffer)
-      }
-      _ => None,
-    }
+    let Ok(cluster) = shared_memory_cluster(scope) else {
+      return None;
+    };
+    let backing_store =
+      if let Some(broadcast) = &self.broadcast_shared_array_buffers {
+        let list = broadcast.borrow();
+        let entry = list.get(transfer_id as usize)?;
+        if entry.agent_cluster != cluster {
+          return None;
+        }
+        entry.backing_store.clone()
+      } else {
+        let state = JsRuntime::state_from(scope);
+        state
+          .shared_array_buffer_store
+          .as_ref()?
+          .take_tagged(transfer_id, cluster)?
+      };
+    Some(v8::SharedArrayBuffer::with_backing_store(
+      scope,
+      &backing_store,
+    ))
   }
 
   fn get_wasm_module_from_id<'s, 'i>(
@@ -1110,7 +1134,7 @@ pub fn serialize_broadcast<'s, 'i>(
   scope: &mut v8::PinScope<'s, 'i>,
   value: v8::Local<'s, v8::Value>,
   error_callback: Option<v8::Local<'s, v8::Function>>,
-) -> Result<(Vec<u8>, Vec<v8::SharedRef<v8::BackingStore>>), JsErrorBox> {
+) -> Result<(Vec<u8>, Vec<BroadcastSharedArrayBuffer>), JsErrorBox> {
   let key = v8_static_strings::HOST_OBJECT.v8_string(scope).unwrap();
   let symbol = v8::Symbol::for_key(scope, key);
   let broadcast = Rc::new(RefCell::new(Vec::new()));
@@ -1152,7 +1176,7 @@ pub fn serialize_broadcast<'s, 'i>(
 pub fn deserialize_broadcast<'s, 'i>(
   scope: &mut v8::PinScope<'s, 'i>,
   data: &[u8],
-  shared_array_buffers: Vec<v8::SharedRef<v8::BackingStore>>,
+  shared_array_buffers: Vec<BroadcastSharedArrayBuffer>,
   deserializers: Option<v8::Local<'s, v8::Object>>,
 ) -> Result<v8::Local<'s, v8::Value>, JsErrorBox> {
   let key = v8_static_strings::HOST_OBJECT.v8_string(scope).unwrap();

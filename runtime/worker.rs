@@ -1287,6 +1287,7 @@ fn common_runtime(opts: CommonRuntimeOptions) -> JsRuntime {
     create_params: opts.create_params,
     skip_op_registration: opts.skip_op_registration,
     shared_array_buffer_store: opts.shared_array_buffer_store,
+    shared_array_buffer_policy: None,
     compiled_wasm_module_store: opts.compiled_wasm_module_store,
     extensions: opts.extensions,
     #[cfg(feature = "transpile")]

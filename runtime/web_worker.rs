@@ -646,6 +646,7 @@ impl WebWorker {
       residual_lazy_esm_sources: options.residual_lazy_esm_sources,
       create_params: options.create_params,
       shared_array_buffer_store: services.shared_array_buffer_store,
+      shared_array_buffer_policy: None,
       compiled_wasm_module_store: services.compiled_wasm_module_store,
       extensions,
       #[cfg(feature = "transpile")]

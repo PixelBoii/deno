@@ -933,6 +933,8 @@ function serializeJsMessageData(data, transferables) {
       ArrayPrototypePush(transferredArrayBuffers, t);
     } else if (t[core.hostObjectBrand]) {
       ArrayPrototypePush(hostObjects, t);
+    } else {
+      throw new DOMException("Value is not transferable", "DataCloneError");
     }
   }
 

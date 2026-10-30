@@ -490,22 +490,34 @@ impl DerefMut for JsRuntimeForSnapshot {
 pub struct CrossIsolateStore<T>(Arc<Mutex<CrossIsolateStoreInner<T>>>);
 
 struct CrossIsolateStoreInner<T> {
-  map: HashMap<u32, T>,
+  map: HashMap<u32, (T, Option<u64>)>,
   last_id: u32,
 }
 
 impl<T> CrossIsolateStore<T> {
   pub(crate) fn insert(&self, value: T) -> u32 {
-    let mut store = self.0.lock().unwrap();
-    let last_id = store.last_id;
-    store.map.insert(last_id, value);
-    store.last_id += 1;
-    last_id
+    self.insert_tagged(value, None)
   }
 
-  pub(crate) fn take(&self, id: u32) -> Option<T> {
+  pub(crate) fn insert_tagged(&self, value: T, cluster: Option<u64>) -> u32 {
     let mut store = self.0.lock().unwrap();
-    store.map.remove(&id)
+    let id = store.last_id;
+    store.last_id = store
+      .last_id
+      .checked_add(1)
+      .expect("Cross-isolate store exhausted");
+    store.map.insert(id, (value, cluster));
+    id
+  }
+  pub(crate) fn take(&self, id: u32) -> Option<T> {
+    self.0.lock().unwrap().map.remove(&id).map(|v| v.0)
+  }
+  pub(crate) fn take_tagged(&self, id: u32, cluster: Option<u64>) -> Option<T> {
+    let mut store = self.0.lock().unwrap();
+    if store.map.get(&id)?.1 != cluster {
+      return None;
+    }
+    store.map.remove(&id).map(|v| v.0)
   }
 }
 
@@ -535,6 +547,8 @@ pub struct JsRuntimeState {
   pub(crate) source_mapper: Rc<RefCell<SourceMapper>>,
   pub(crate) op_state: Rc<RefCell<OpState>>,
   pub(crate) shared_array_buffer_store: Option<SharedArrayBufferStore>,
+  pub(crate) shared_array_buffer_policy:
+    Option<fn(&mut v8::PinScope) -> Option<u64>>,
   pub(crate) compiled_wasm_module_store: Option<CompiledWasmModuleStore>,
   wait_for_inspector_disconnect_callback:
     Option<WaitForInspectorDisconnectCallback>,
@@ -636,6 +650,12 @@ pub struct RuntimeOptions {
   /// no [SharedArrayBufferStore] is specified, SharedArrayBuffer can not be
   /// serialized.
   pub shared_array_buffer_store: Option<SharedArrayBufferStore>,
+  /// Optional embedder capability check, evaluated in the serializing or
+  /// deserializing realm, including BroadcastChannel. None from the callback
+  /// denies shared memory; Some identifies its permitted agent cluster. An
+  /// absent callback retains Deno's existing behavior. Ordinary transferred
+  /// ArrayBuffers are unaffected.
+  pub shared_array_buffer_policy: Option<fn(&mut v8::PinScope) -> Option<u64>>,
 
   /// The store to use for transferring `WebAssembly.Module` objects between
   /// isolates.
@@ -1195,6 +1215,7 @@ impl JsRuntime {
     let state_rc = Rc::new(JsRuntimeState {
       source_mapper: Rc::new(RefCell::new(source_mapper)),
       shared_array_buffer_store: options.shared_array_buffer_store,
+      shared_array_buffer_policy: options.shared_array_buffer_policy,
       compiled_wasm_module_store: options.compiled_wasm_module_store,
       wait_for_inspector_disconnect_callback: options
         .wait_for_inspector_disconnect_callback,

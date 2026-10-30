@@ -2228,3 +2228,54 @@ fn foreground_tasks_delivered_without_tokio_handle() {
     runtime.resolve_value(promise).await.unwrap();
   });
 }
+
+#[test]
+fn test_embedder_shared_memory_agent_clusters() {
+  fn policy(scope: &mut v8::PinScope) -> Option<u64> {
+    scope.get_current_context().get_slot::<u64>().map(|id| *id)
+  }
+  let mut runtime = JsRuntime::new(RuntimeOptions {
+    shared_array_buffer_store: Some(Default::default()),
+    shared_array_buffer_policy: Some(policy),
+    ..Default::default()
+  });
+  runtime
+    .execute_script(
+      "create-sab",
+      "globalThis.sab=new SharedArrayBuffer(8); new Uint8Array(sab)[0]=19;",
+    )
+    .unwrap();
+  runtime.execute_script("denied", "let denied=false;try{Deno.core.serialize(sab)}catch{denied=true}if(!denied)throw Error('non-isolated serialization allowed')").unwrap();
+  {
+    deno_core::scope!(scope, runtime);
+    scope.get_current_context().set_slot(Rc::new(7u64));
+  }
+  runtime
+    .execute_script("serialize", "globalThis.wire=Deno.core.serialize({sab});")
+    .unwrap();
+  {
+    deno_core::scope!(scope, runtime);
+    scope.get_current_context().set_slot(Rc::new(8u64));
+  }
+  runtime.execute_script("foreign", "let blocked=false;try{Deno.core.deserialize(wire)}catch{blocked=true}if(!blocked)throw Error('cross-cluster deserialization allowed')").unwrap();
+  {
+    deno_core::scope!(scope, runtime);
+    scope.get_current_context().set_slot(Rc::new(7u64));
+  }
+  runtime.execute_script("same", "const received=Deno.core.deserialize(wire);new Uint8Array(received.sab)[0]=23;if(new Uint8Array(sab)[0]!==23)throw Error('not shared')").unwrap();
+  let shared = runtime
+    .execute_script("broadcast-value", "({sab})")
+    .unwrap();
+  {
+    deno_core::scope!(scope, runtime);
+    let shared = v8::Local::new(scope, shared);
+    let (data, stores) =
+      crate::serialize_broadcast(scope, shared, None).unwrap();
+    scope.get_current_context().set_slot(Rc::new(9u64));
+    assert!(
+      crate::deserialize_broadcast(scope, &data, stores.clone(), None).is_err()
+    );
+    scope.get_current_context().set_slot(Rc::new(7u64));
+    assert!(crate::deserialize_broadcast(scope, &data, stores, None).is_ok());
+  }
+}

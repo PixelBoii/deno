@@ -62,7 +62,7 @@ impl<T: std::fmt::Debug + Send + Sync + 'static> From<BroadcastSendError<T>>
 // message; it is `0` when the message carries none.
 pub type BroadcastChannelMessage = (String, Vec<u8>, u32);
 
-type SharedArrayBuffers = Vec<v8::SharedRef<v8::BackingStore>>;
+type SharedArrayBuffers = Vec<deno_core::BroadcastSharedArrayBuffer>;
 
 // A message received from the broadcast channel: (name, serialized data,
 // out-of-band SharedArrayBuffer backing stores).
