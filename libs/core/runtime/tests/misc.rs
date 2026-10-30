@@ -32,6 +32,42 @@ use crate::runtime::tests::setup;
 use crate::*;
 
 #[test]
+fn test_host_function_api() {
+  let mut runtime = JsRuntime::new(Default::default());
+  runtime.execute_script("host-function.js", r#"
+    const check = (value, message) => { if (!value) throw new Error(message); };
+    const create = Deno.core.createHostFunction;
+    const sentinel = {};
+    const operation = create((receiver, args, newTarget) => {
+      check(newTarget === undefined, 'ordinary call new.target');
+      if (args[0] === 'throw') throw sentinel;
+      return receiver.value + args[0];
+    }, 'operation', 1, false);
+    check(operation.name === 'operation' && operation.length === 1, 'name/length');
+    check(Function.prototype.toString.call(operation).includes('[native code]'), 'API function source');
+    check(!Object.hasOwn(operation, 'prototype'), 'operation prototype');
+    check(operation.call({value: 4}, 5) === 9, 'receiver/arguments');
+    try { new operation(); throw new Error('constructable operation'); }
+    catch (error) { check(error instanceof TypeError, 'construction error'); }
+    try { operation('throw'); throw new Error('exception swallowed'); }
+    catch (error) { check(error === sentinel, 'exception identity'); }
+    class Implementation { constructor(value) { this.value = value; } }
+    const Interface = create((receiver, args, target) => Reflect.construct(Implementation, args, target), 'Interface', 1, true);
+    Object.defineProperty(Interface, 'prototype', {value: Implementation.prototype});
+    class Subclass extends Interface {}
+    const instance = new Subclass(42);
+    check(instance instanceof Subclass && instance instanceof Implementation && instance.value === 42, 'new.target');
+    globalThis.retainedHostFunction = (() => {
+      const data = {answer: 43};
+      return create(() => data.answer, 'retained', 0, false);
+    })();
+    check(!Function.prototype.toString.call(function scriptFunction() {}).includes('[native code]'), 'script source unchanged');
+  "#).unwrap();
+  runtime.v8_isolate().low_memory_notification();
+  runtime.execute_script("retained-host-function.js", "if (retainedHostFunction() !== 43) throw new Error('callback was not traced')").unwrap();
+}
+
+#[test]
 fn icu() {
   // If this test fails, update core/runtime/icudtl.dat from
   // rusty_v8/third_party/icu/common/icudtl.dat

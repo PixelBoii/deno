@@ -27,6 +27,56 @@ use crate::runtime::v8_static_strings;
 use crate::source_map::SourceMapApplication;
 use crate::stats::RuntimeActivityType;
 
+// API functions retain a JS implementation in their callback data. V8 owns that
+// reference, so closures (including ones in another realm) are traced normally.
+fn host_function_callback(
+  scope: &mut v8::PinScope,
+  args: v8::FunctionCallbackArguments,
+  mut rv: v8::ReturnValue,
+) {
+  let callback = v8::Local::<v8::Function>::try_from(args.data()).unwrap();
+  let values: Vec<_> = (0..args.length()).map(|i| args.get(i)).collect();
+  let values = v8::Array::new_with_elements(scope, &values);
+  let receiver = v8::undefined(scope).into();
+  if let Some(result) = callback.call(
+    scope,
+    receiver,
+    &[args.this().into(), values.into(), args.new_target()],
+  ) {
+    rv.set(result);
+  }
+  // A pending exception is propagated to the caller unchanged.
+}
+
+#[op2]
+pub fn op_create_host_function<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+  callback: v8::Local<'s, v8::Function>,
+  name: v8::Local<'s, v8::String>,
+  length: i32,
+  constructable: bool,
+) -> Result<v8::Local<'s, v8::Function>, JsErrorBox> {
+  // Binding JS callback data during snapshot generation is not supported.
+  // Reject it explicitly instead of passing this graph to V8's serializer.
+  if JsRealm::module_map_from(scope).is_snapshotting() {
+    return Err(JsErrorBox::type_error(
+      "Host functions must be created after restoring a snapshot",
+    ));
+  }
+  let function = v8::Function::builder(host_function_callback)
+    .data(callback.into())
+    .length(length)
+    .constructor_behavior(if constructable {
+      v8::ConstructorBehavior::Allow
+    } else {
+      v8::ConstructorBehavior::Throw
+    })
+    .build(scope)
+    .ok_or_else(|| JsErrorBox::generic("Could not create host function"))?;
+  function.set_name(name);
+  Ok(function)
+}
+
 #[op2(fast)]
 pub fn op_add_main_module_handler(
   scope: &mut v8::PinScope,

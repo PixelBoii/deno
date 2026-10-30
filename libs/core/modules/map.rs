@@ -173,6 +173,10 @@ impl NewModuleResult {
 }
 
 impl ModuleMap {
+  pub(crate) fn is_snapshotting(&self) -> bool {
+    self.will_snapshot
+  }
+
   /// There is a circular Rc reference between the module map and the futures,
   /// so when destroying the module map we need to clear the pending futures.
   pub(crate) fn destroy(&self) {

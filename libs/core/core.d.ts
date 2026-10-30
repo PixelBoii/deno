@@ -64,6 +64,19 @@ export namespace core {
    */
   const ops: Record<string, (...args: unknown[]) => any>;
 
+  /** Create a V8 API function backed by an embedder's JavaScript dispatcher.
+   * The dispatcher receives the receiver, arguments and new.target (undefined
+   * for ordinary calls). It must implement construction when enabled.
+   * Bind after snapshot restoration; creating callbacks during snapshot
+   * generation is unsupported and throws TypeError.
+   */
+  function createHostFunction(
+    callback: (receiver: unknown, args: unknown[], newTarget: Function | undefined) => unknown,
+    name: string,
+    length: number,
+    constructable: boolean,
+  ): Function;
+
   /**
    * Retrieve a list of all open resources, in the form of a map that maps
    * resource id to the resource name.

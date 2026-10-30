@@ -14,6 +14,38 @@ use crate::runtime::NO_OF_BUILTIN_MODULES;
 use crate::*;
 
 #[test]
+fn test_host_function_after_snapshot() {
+  let _snapshot_lock = super::snapshot_test_lock();
+  let snapshot = {
+    let mut runtime = JsRuntimeForSnapshot::new(Default::default());
+    runtime.execute_script("host-function.js", r#"
+      let rejected = false;
+      try { Deno.core.createHostFunction(() => 0, 'unsafeSnapshotCallback', 0, false); }
+      catch (error) { rejected = error instanceof TypeError && error.message.includes('snapshot'); }
+      if (!rejected) throw new Error('snapshot creation must reject host callback data');
+      globalThis.createAfterSnapshot = () => {
+        const data = {answer: 42};
+        return Deno.core.createHostFunction(
+          (receiver, args) => data.answer + receiver.offset + args[0],
+          'hostFunction', 1, false);
+      };
+    "#).unwrap();
+    runtime.snapshot()
+  };
+  let mut runtime = JsRuntime::new(RuntimeOptions {
+    startup_snapshot: Some(Box::leak(snapshot)),
+    ..Default::default()
+  });
+  runtime.execute_script("restored-host-function.js", r#"
+    const hostFunction = createAfterSnapshot();
+    if (hostFunction.call({offset: 2}, 3) !== 47 ||
+        !Function.prototype.toString.call(hostFunction).includes('[native code]')) {
+      throw new Error('host function did not initialize after snapshot');
+    }
+  "#).unwrap();
+}
+
+#[test]
 fn will_snapshot() {
   let _snapshot_lock = super::snapshot_test_lock();
   let snapshot = {

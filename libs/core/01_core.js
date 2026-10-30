@@ -47,6 +47,7 @@
     op_abort_wasm_streaming,
     op_current_user_call_site,
     op_compile_function,
+    op_create_host_function,
     op_decode,
     op_deserialize,
     op_destructure_error,
@@ -1158,6 +1159,7 @@
       }
       return [result, null];
     },
+    createHostFunction: op_create_host_function,
     evalContext: (
       source,
       specifier,
