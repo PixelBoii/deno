@@ -11,6 +11,7 @@ const {
   ArrayPrototypeSlice,
   ArrayPrototypeSort,
   ArrayPrototypeSplice,
+  MathFloor,
   ObjectKeys,
   ObjectFreeze,
   ObjectPrototypeIsPrototypeOf,
@@ -78,12 +79,15 @@ function setTimeOrigin(options = undefined) {
     timeOriginOffset = hr[0] * 1000 + hr[1] / 1e6 - (options.elapsed ?? 0);
     timeOrigin += timeOriginOffset;
   }
+  if (timePrecision) {
+    timeOrigin = MathFloor(timeOrigin / timePrecision) * timePrecision;
+  }
 }
 
 function now() {
   op_now(hrU8);
   const value = hr[0] * 1000 + hr[1] / 1e6 - timeOriginOffset;
-  return timePrecision ? Math.floor(value / timePrecision) * timePrecision : value;
+  return timePrecision ? MathFloor(value / timePrecision) * timePrecision : value;
 }
 
 // Embedders can supply their event loop and additional entry types. Deno keeps

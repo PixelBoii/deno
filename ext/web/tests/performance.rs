@@ -43,5 +43,17 @@ fn performance_timeline_defaults_and_observer_order() {
     assert(p.getEntriesByName('').length === 1);
     assert(p.getEntriesByType('').length === 0);
     observer.disconnect();
+    const floor = Math.floor;
+    for (const precision of [0.1, 0.005]) {
+      timeline.setTimeOrigin({reset: true, precision});
+      const originGrid = p.timeOrigin / precision;
+      assert(Math.abs(originGrid - Math.round(originGrid)) < 0.1);
+      const nowGrid = p.now() / precision;
+      assert(Math.abs(nowGrid - Math.round(nowGrid)) < 1e-6);
+      // Author replacement of Math.floor cannot disable embedder coarsening.
+      Math.floor = () => { throw Error('author floor'); };
+      try { timeline.setTimeOrigin({reset: true, precision}); p.now(); }
+      finally { Math.floor = floor; }
+    }
   "#).unwrap();
 }
