@@ -2279,3 +2279,37 @@ fn test_embedder_shared_memory_agent_clusters() {
     assert!(crate::deserialize_broadcast(scope, &data, stores, None).is_ok());
   }
 }
+
+#[test]
+fn test_private_unserializable_host_object() {
+  let mut runtime = JsRuntime::new(RuntimeOptions::default());
+  let object = runtime
+    .execute_script("host-object", "globalThis.hostObject = {value: 23}")
+    .unwrap();
+  {
+    deno_core::scope!(scope, runtime);
+    let object = v8::Local::new(scope, object).try_into().unwrap();
+    crate::mark_as_unserializable_host_object(scope, object);
+  }
+  runtime.execute_script("host-serialization", r#"
+    function assert(value) { if (!value) throw Error('private host marker'); }
+    function rejected(value) {
+      try { Deno.core.serialize(value); return false; } catch { return true; }
+    }
+    assert(Reflect.ownKeys(hostObject).join() === 'value');
+    assert(rejected(hostObject) && rejected({nested: hostObject}));
+    const copied = Object.create(Object.getPrototypeOf(hostObject));
+    for (const key of Reflect.ownKeys(hostObject)) {
+      Object.defineProperty(copied, key, Object.getOwnPropertyDescriptor(hostObject, key));
+    }
+    assert(Deno.core.deserialize(Deno.core.serialize(copied)).value === 23);
+    const brand = Symbol.for('Deno.core.hostObject');
+    const legacy = {[brand]() { return {value: 9}; }};
+    assert(Deno.core.serialize(legacy) instanceof Uint8Array);
+    hostObject[brand] = () => ({value: 9});
+    assert(rejected(hostObject));
+    delete hostObject[brand];
+    Object.freeze(hostObject);
+    assert(rejected(hostObject));
+  "#).unwrap();
+}

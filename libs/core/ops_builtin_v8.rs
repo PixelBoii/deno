@@ -27,6 +27,27 @@ use crate::runtime::v8_static_strings;
 use crate::source_map::SourceMapApplication;
 use crate::stats::RuntimeActivityType;
 
+fn unserializable_host_object_key<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+) -> v8::Local<'s, v8::Private> {
+  let name =
+    v8::String::new(scope, "Deno.core.unserializableHostObject").unwrap();
+  v8::Private::for_api(scope, Some(name))
+}
+
+/// Marks an embedder-defined object as ineligible for structured serialization.
+/// Unlike the public custom-host-object symbol, the marker cannot be reflected,
+/// copied, deleted, or replaced by JavaScript. It takes precedence over custom
+/// serialization hooks on the object.
+pub fn mark_as_unserializable_host_object(
+  scope: &mut v8::PinScope,
+  object: v8::Local<v8::Object>,
+) {
+  let key = unserializable_host_object_key(scope);
+  let value = v8::Boolean::new(scope, true);
+  assert_eq!(object.set_private(scope, key, value.into()), Some(true));
+}
+
 // API functions retain a JS implementation in their callback data. V8 owns that
 // reference, so closures (including ones in another realm) are traced normally.
 fn host_function_callback(
@@ -781,7 +802,8 @@ impl v8::ValueSerializerImpl for SerializeDeserialize<'_> {
   }
 
   fn has_custom_host_object(&self, _isolate: &v8::Isolate) -> bool {
-    self.host_object_brand.is_some()
+    // Embedders may mark a native object without installing the public symbol.
+    true
   }
 
   fn is_host_object<'s, 'i>(
@@ -789,6 +811,10 @@ impl v8::ValueSerializerImpl for SerializeDeserialize<'_> {
     scope: &mut v8::PinScope<'s, 'i>,
     object: v8::Local<'s, v8::Object>,
   ) -> Option<bool> {
+    let key = unserializable_host_object_key(scope);
+    if object.has_private(scope, key)? {
+      return Some(true);
+    }
     match self.host_object_brand {
       Some(symbol) => object.has(scope, symbol.into()),
       _ => Some(false),
@@ -801,6 +827,12 @@ impl v8::ValueSerializerImpl for SerializeDeserialize<'_> {
     object: v8::Local<'s, v8::Object>,
     value_serializer: &dyn v8::ValueSerializerHelper,
   ) -> Option<bool> {
+    let key = unserializable_host_object_key(scope);
+    if object.has_private(scope, key)? {
+      let message = v8::String::new(scope, "Unsupported object type").unwrap();
+      self.throw_data_clone_error(scope, message);
+      return None;
+    }
     if let Some(host_object_brand) = self.host_object_brand {
       let value = object.get(scope, host_object_brand.into())?;
       if let Ok(func) = value.try_cast::<v8::Function>() {
