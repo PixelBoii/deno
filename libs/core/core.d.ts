@@ -71,6 +71,8 @@ export namespace core {
    * generation is unsupported and throws TypeError.
    * An optional receiverCheck runs before dispatch. A falsy result rejects
    * with a native TypeError; checker and dispatcher exceptions propagate as-is.
+   * Set promise for a promise-returning API to reject instead of throwing when
+   * receiverCheck returns false. It does not wrap the dispatcher's result.
    */
   function createHostFunction(
     callback: (receiver: unknown, args: unknown[], newTarget: Function | undefined) => unknown,
@@ -78,6 +80,7 @@ export namespace core {
     length: number,
     constructable: boolean,
     receiverCheck?: (receiver: unknown) => boolean,
+    promise?: boolean,
   ): Function;
 
   /**

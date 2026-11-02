@@ -70,7 +70,14 @@ fn host_function_callback(
         // V8 captures the public call site without implementation helper frames.
         let message = v8::String::new(scope, "Illegal invocation").unwrap();
         let exception = v8::Exception::type_error(scope, message);
-        scope.throw_exception(exception);
+        let promise = data.get_index(scope, 2).unwrap();
+        if promise.is_true() {
+          let resolver = v8::PromiseResolver::new(scope).unwrap();
+          resolver.reject(scope, exception);
+          rv.set(resolver.get_promise(scope).into());
+        } else {
+          scope.throw_exception(exception);
+        }
         return;
       }
     }
@@ -96,6 +103,7 @@ pub fn op_create_host_function<'s>(
   length: i32,
   constructable: bool,
   receiver_check: Option<v8::Local<'s, v8::Function>>,
+  promise: bool,
 ) -> Result<v8::Local<'s, v8::Function>, JsErrorBox> {
   // Binding JS callback data during snapshot generation is not supported.
   // Reject it explicitly instead of passing this graph to V8's serializer.
@@ -106,7 +114,8 @@ pub fn op_create_host_function<'s>(
   }
   let checker = receiver_check.map(v8::Local::<v8::Value>::from)
     .unwrap_or_else(|| v8::undefined(scope).into());
-  let data = v8::Array::new_with_elements(scope, &[callback.into(), checker]);
+  let promise = v8::Boolean::new(scope, promise);
+  let data = v8::Array::new_with_elements(scope, &[callback.into(), checker, promise.into()]);
   let function = v8::Function::builder(host_function_callback)
     .data(data.into())
     .length(length)

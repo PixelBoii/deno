@@ -81,8 +81,19 @@ fn test_host_function_api() {
     const throwingChecker = create(() => 0, 'throwingChecker', 0, false, () => { throw sentinel; });
     try { throwingChecker(); throw new Error('validator exception swallowed'); }
     catch(error) { check(error === sentinel, 'validator exception identity'); }
+    const asynchronous = create(() => { throw new Error('invalid receiver dispatched'); },
+      'asynchronous', 0, false, () => false, true);
+    const rejection = asynchronous.call({});
+    check(rejection instanceof Promise, 'invalid async receiver returns a promise');
+    rejection.catch(error => {
+      check(error instanceof TypeError, 'async receiver TypeError');
+      check(!error.stack.includes('receiverValidation'), 'async rejection stack');
+      globalThis.receiverRejectionObserved = true;
+    });
   "#).unwrap();
   runtime.v8_isolate().low_memory_notification();
+  runtime.v8_isolate().perform_microtask_checkpoint();
+  runtime.execute_script("host-function-microtasks.js", "if (!receiverRejectionObserved) throw new Error('receiver rejection was not delivered')").unwrap();
   runtime.execute_script("retained-host-function.js", "if (retainedHostFunction() !== 43) throw new Error('callback was not traced')").unwrap();
 }
 
