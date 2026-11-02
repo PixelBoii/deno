@@ -55,7 +55,26 @@ fn host_function_callback(
   args: v8::FunctionCallbackArguments,
   mut rv: v8::ReturnValue,
 ) {
-  let callback = v8::Local::<v8::Function>::try_from(args.data()).unwrap();
+  let data = v8::Local::<v8::Array>::try_from(args.data()).unwrap();
+  let callback = data.get_index(scope, 0).unwrap();
+  let callback = v8::Local::<v8::Function>::try_from(callback).unwrap();
+  if args.new_target().is_undefined() {
+    let checker = data.get_index(scope, 1).unwrap();
+    if let Ok(checker) = v8::Local::<v8::Function>::try_from(checker) {
+      let receiver = v8::undefined(scope).into();
+      let Some(valid) = checker.call(scope, receiver, &[args.this().into()]) else {
+        return; // Preserve a validator's own exception unchanged.
+      };
+      if !valid.boolean_value(scope) {
+        // Reject at the API boundary, before entering the JS implementation.
+        // V8 captures the public call site without implementation helper frames.
+        let message = v8::String::new(scope, "Illegal invocation").unwrap();
+        let exception = v8::Exception::type_error(scope, message);
+        scope.throw_exception(exception);
+        return;
+      }
+    }
+  }
   let values: Vec<_> = (0..args.length()).map(|i| args.get(i)).collect();
   let values = v8::Array::new_with_elements(scope, &values);
   let receiver = v8::undefined(scope).into();
@@ -76,6 +95,7 @@ pub fn op_create_host_function<'s>(
   name: v8::Local<'s, v8::String>,
   length: i32,
   constructable: bool,
+  receiver_check: Option<v8::Local<'s, v8::Function>>,
 ) -> Result<v8::Local<'s, v8::Function>, JsErrorBox> {
   // Binding JS callback data during snapshot generation is not supported.
   // Reject it explicitly instead of passing this graph to V8's serializer.
@@ -84,8 +104,11 @@ pub fn op_create_host_function<'s>(
       "Host functions must be created after restoring a snapshot",
     ));
   }
+  let checker = receiver_check.map(v8::Local::<v8::Value>::from)
+    .unwrap_or_else(|| v8::undefined(scope).into());
+  let data = v8::Array::new_with_elements(scope, &[callback.into(), checker]);
   let function = v8::Function::builder(host_function_callback)
-    .data(callback.into())
+    .data(data.into())
     .length(length)
     .constructor_behavior(if constructable {
       v8::ConstructorBehavior::Allow

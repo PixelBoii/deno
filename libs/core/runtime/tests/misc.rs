@@ -62,6 +62,25 @@ fn test_host_function_api() {
       return create(() => data.answer, 'retained', 0, false);
     })();
     check(!Function.prototype.toString.call(function scriptFunction() {}).includes('[native code]'), 'script source unchanged');
+    let dispatches = 0;
+    const accepted = {};
+    const guarded = create(function guardedDispatch(receiver, args) {
+      dispatches++;
+      if (args[0] === 'throw') throw sentinel;
+      return 44;
+    }, 'guarded', 0, false, function receiverValidation(receiver) { return receiver === accepted; });
+    try { guarded.call({}); throw new Error('invalid receiver accepted'); }
+    catch (error) {
+      check(error instanceof TypeError, 'native receiver exception type');
+      check(!error.stack.includes('guardedDispatch') && !error.stack.includes('receiverValidation'), 'receiver rejected before JS dispatcher');
+    }
+    check(dispatches === 0, 'invalid receiver never enters implementation');
+    check(guarded.call(accepted) === 44 && dispatches === 1, 'valid receiver dispatch');
+    try { guarded.call(accepted, 'throw'); throw new Error('exception swallowed'); }
+    catch(error) { check(error === sentinel, 'guarded callback exception identity'); }
+    const throwingChecker = create(() => 0, 'throwingChecker', 0, false, () => { throw sentinel; });
+    try { throwingChecker(); throw new Error('validator exception swallowed'); }
+    catch(error) { check(error === sentinel, 'validator exception identity'); }
   "#).unwrap();
   runtime.v8_isolate().low_memory_notification();
   runtime.execute_script("retained-host-function.js", "if (retainedHostFunction() !== 43) throw new Error('callback was not traced')").unwrap();

@@ -69,12 +69,15 @@ export namespace core {
    * for ordinary calls). It must implement construction when enabled.
    * Bind after snapshot restoration; creating callbacks during snapshot
    * generation is unsupported and throws TypeError.
+   * An optional receiverCheck runs before dispatch. A falsy result rejects
+   * with a native TypeError; checker and dispatcher exceptions propagate as-is.
    */
   function createHostFunction(
     callback: (receiver: unknown, args: unknown[], newTarget: Function | undefined) => unknown,
     name: string,
     length: number,
     constructable: boolean,
+    receiverCheck?: (receiver: unknown) => boolean,
   ): Function;
 
   /**
