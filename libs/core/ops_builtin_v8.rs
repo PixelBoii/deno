@@ -58,6 +58,7 @@ fn host_function_callback(
   let data = v8::Local::<v8::Array>::try_from(args.data()).unwrap();
   let callback = data.get_index(scope, 0).unwrap();
   let callback = v8::Local::<v8::Function>::try_from(callback).unwrap();
+  let mut failure = None;
   if args.new_target().is_undefined() {
     let checker = data.get_index(scope, 1).unwrap();
     if let Ok(checker) = v8::Local::<v8::Function>::try_from(checker) {
@@ -66,21 +67,32 @@ fn host_function_callback(
         return; // Preserve a validator's own exception unchanged.
       };
       if !valid.boolean_value(scope) {
-        // Reject at the API boundary, before entering the JS implementation.
-        // V8 captures the public call site without implementation helper frames.
-        let message = v8::String::new(scope, "Illegal invocation").unwrap();
-        let exception = v8::Exception::type_error(scope, message);
-        let promise = data.get_index(scope, 2).unwrap();
-        if promise.is_true() {
-          let resolver = v8::PromiseResolver::new(scope).unwrap();
-          resolver.reject(scope, exception);
-          rv.set(resolver.get_promise(scope).into());
-        } else {
-          scope.throw_exception(exception);
-        }
-        return;
+        failure = Some("Illegal invocation".to_string());
       }
     }
+  }
+  if failure.is_none() {
+    let count = data.get_index(scope, 3).unwrap().uint32_value(scope).unwrap();
+    if (args.length() as u32) < count {
+      let prefix = data.get_index(scope, 4).unwrap().to_rust_string_lossy(scope);
+      let plural = if count == 1 { "" } else { "s" };
+      failure = Some(format!("{prefix}: {count} argument{plural} required, but only {} present.", args.length()));
+    }
+  }
+  if let Some(message) = failure {
+    // Binding errors are created before JS dispatch. Application exceptions
+    // from the validator and dispatcher still propagate unchanged.
+    let message = v8::String::new(scope, &message).unwrap();
+    let exception = v8::Exception::type_error(scope, message);
+    let promise = data.get_index(scope, 2).unwrap();
+    if promise.is_true() && args.new_target().is_undefined() {
+      let resolver = v8::PromiseResolver::new(scope).unwrap();
+      resolver.reject(scope, exception);
+      rv.set(resolver.get_promise(scope).into());
+    } else {
+      scope.throw_exception(exception);
+    }
+    return;
   }
   let values: Vec<_> = (0..args.length()).map(|i| args.get(i)).collect();
   let values = v8::Array::new_with_elements(scope, &values);
@@ -95,6 +107,12 @@ fn host_function_callback(
   // A pending exception is propagated to the caller unchanged.
 }
 
+#[derive(serde::Deserialize)]
+pub struct HostFunctionRequiredArguments {
+  count: u32,
+  prefix: String,
+}
+
 #[op2]
 pub fn op_create_host_function<'s>(
   scope: &mut v8::PinScope<'s, '_>,
@@ -104,6 +122,7 @@ pub fn op_create_host_function<'s>(
   constructable: bool,
   receiver_check: Option<v8::Local<'s, v8::Function>>,
   promise: bool,
+  #[serde] required_arguments: Option<HostFunctionRequiredArguments>,
 ) -> Result<v8::Local<'s, v8::Function>, JsErrorBox> {
   // Binding JS callback data during snapshot generation is not supported.
   // Reject it explicitly instead of passing this graph to V8's serializer.
@@ -115,7 +134,12 @@ pub fn op_create_host_function<'s>(
   let checker = receiver_check.map(v8::Local::<v8::Value>::from)
     .unwrap_or_else(|| v8::undefined(scope).into());
   let promise = v8::Boolean::new(scope, promise);
-  let data = v8::Array::new_with_elements(scope, &[callback.into(), checker, promise.into()]);
+  let required_arguments = required_arguments.unwrap_or(HostFunctionRequiredArguments {
+    count: 0, prefix: String::new(),
+  });
+  let count = v8::Integer::new_from_unsigned(scope, required_arguments.count);
+  let prefix = v8::String::new(scope, &required_arguments.prefix).unwrap();
+  let data = v8::Array::new_with_elements(scope, &[callback.into(), checker, promise.into(), count.into(), prefix.into()]);
   let function = v8::Function::builder(host_function_callback)
     .data(data.into())
     .length(length)

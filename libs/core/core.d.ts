@@ -73,6 +73,7 @@ export namespace core {
    * with a native TypeError; checker and dispatcher exceptions propagate as-is.
    * Set promise for a promise-returning API to reject instead of throwing when
    * receiverCheck returns false. It does not wrap the dispatcher's result.
+   * requiredArguments checks arity before dispatch, after receiver validation.
    */
   function createHostFunction(
     callback: (receiver: unknown, args: unknown[], newTarget: Function | undefined) => unknown,
@@ -81,6 +82,7 @@ export namespace core {
     constructable: boolean,
     receiverCheck?: (receiver: unknown) => boolean,
     promise?: boolean,
+    requiredArguments?: {count: number; prefix: string},
   ): Function;
 
   /**

@@ -90,6 +90,16 @@ fn test_host_function_api() {
       check(!error.stack.includes('receiverValidation'), 'async rejection stack');
       globalThis.receiverRejectionObserved = true;
     });
+    const required = create(() => {dispatches++;}, 'required', 2, false,
+      receiver => receiver === accepted, false, {count:2,prefix:"Failed to execute 'required' on 'Interface'"});
+    try {required.call(accepted, {toString(){throw sentinel;}}); throw new Error('arity check missing');}
+    catch(error) {
+      check(error instanceof TypeError && error.message.includes('2 arguments required, but only 1 present'), 'native argument-count error');
+      check(!error.stack.includes('ops_builtin'), 'argument error stack');
+    }
+    try {required.call({});throw new Error('receiver accepted');}
+    catch(error) {check(error.message==='Illegal invocation', 'receiver check precedes argument count');}
+    check(dispatches===2,'argument check never enters dispatcher');
   "#).unwrap();
   runtime.v8_isolate().low_memory_notification();
   runtime.v8_isolate().perform_microtask_checkpoint();
