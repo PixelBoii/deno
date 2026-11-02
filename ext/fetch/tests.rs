@@ -371,7 +371,7 @@ async fn test_fetch_decompresses_gzip_response_and_sets_accept_encoding() {
 
   assert_eq!(
     captured_accept_encoding.lock().await.as_ref().unwrap(),
-    HeaderValue::from_static("gzip,br")
+    HeaderValue::from_static("gzip, deflate, br, zstd")
   );
   // Leading/trailing whitespace around the field value is trimmed on parse.
   assert_eq!(
@@ -440,7 +440,7 @@ async fn test_fetch_empty_body_with_content_encoding_skips_decompression() {
 
     assert_eq!(
       captured_accept_encoding.lock().await.as_ref().unwrap(),
-      HeaderValue::from_static("gzip,br")
+      HeaderValue::from_static("gzip, deflate, br, zstd")
     );
     assert_eq!(
       resp.headers().get(CONTENT_ENCODING).unwrap(),
@@ -470,7 +470,7 @@ async fn test_fetch_preserves_headers_after_chunked_decompression() {
 
   assert_eq!(
     captured_accept_encoding.lock().await.as_deref().unwrap(),
-    "gzip,br"
+    "gzip, deflate, br, zstd"
   );
   assert_eq!(
     resp.headers().get(CONTENT_ENCODING).unwrap(),
@@ -520,11 +520,11 @@ async fn test_fetch_accept_encoding_identity_skips_decompression() {
 }
 
 #[tokio::test]
-async fn test_fetch_multi_content_encoding_preserves_raw_response() {
+async fn test_fetch_unknown_content_encoding_preserves_raw_response() {
   let captured_accept_encoding = Arc::new(Mutex::new(None));
   let src_addr = create_encoded_http_server(
     captured_accept_encoding.clone(),
-    HeaderValue::from_static("gzip, br"),
+    HeaderValue::from_static("gzip, unknown"),
     GZIP_HELLO_FROM_SERVER,
   )
   .await;
@@ -538,11 +538,11 @@ async fn test_fetch_multi_content_encoding_preserves_raw_response() {
 
   assert_eq!(
     captured_accept_encoding.lock().await.as_ref().unwrap(),
-    HeaderValue::from_static("gzip,br")
+    HeaderValue::from_static("gzip, deflate, br, zstd")
   );
   assert_eq!(
     resp.headers().get(CONTENT_ENCODING).unwrap(),
-    HeaderValue::from_static("gzip, br")
+    HeaderValue::from_static("gzip, unknown")
   );
   assert_eq!(
     resp.headers().get(CONTENT_LENGTH).unwrap(),
@@ -584,6 +584,53 @@ async fn test_fetch_range_request_skips_decompression() {
   );
   let body = resp.collect().await.unwrap().to_bytes();
   assert_eq!(body, GZIP_HELLO_FROM_SERVER);
+}
+
+#[test]
+fn test_content_coding_negotiation_respects_secure_context() {
+  for (uri, expected) in [
+    ("https://example.test/", "gzip, deflate, br, zstd"),
+    ("http://example.test/", "gzip, deflate"),
+    ("http://localhost/", "gzip, deflate, br, zstd"),
+    ("http://a.localhost/", "gzip, deflate, br, zstd"),
+    ("http://127.0.0.1/", "gzip, deflate, br, zstd"),
+    ("http://[::1]/", "gzip, deflate, br, zstd"),
+    ("http://localhost.example/", "gzip, deflate"),
+  ] {
+    let mut req = http::Request::builder().uri(uri).body(crate::ReqBody::empty()).unwrap();
+    assert!(!crate::prepare_decompression_request(&mut req));
+    assert_eq!(req.headers()[ACCEPT_ENCODING], expected, "{uri}");
+  }
+}
+
+#[tokio::test]
+async fn test_fetch_decodes_deflate_zstd_and_stacked_codings() {
+  // Independent Node/zlib/Brotli/libzstd vectors for "hello from server".
+  let cases: &[(&str, &[u8])] = &[
+    ("deflate", &[120,156,203,72,205,201,201,87,72,43,202,207,85,40,78,45,42,75,45,2,0,58,190,6,160]),
+    ("zstd", &[40,181,47,253,32,17,137,0,0,104,101,108,108,111,32,102,114,111,109,32,115,101,114,118,101,114]),
+    ("gzip, br", &[11,18,128,31,139,8,0,0,0,0,0,0,3,203,72,205,201,201,87,72,43,202,207,85,40,78,45,42,75,45,2,0,36,32,168,41,17,0,0,0,3]),
+  ];
+  for (encoding, bytes) in cases {
+    let response = http::Response::builder().header(CONTENT_ENCODING, *encoding)
+      .header(CONTENT_LENGTH, bytes.len()).body(http_body_util::Full::new(Bytes::copy_from_slice(bytes))
+      .map_err(|never|match never {}).boxed()).unwrap();
+    let response = crate::decompress_response(response, false);
+    assert!(response.extensions().get::<crate::BodyDecoded>().is_some());
+    assert_eq!(response.headers()[CONTENT_ENCODING], *encoding);
+    assert_eq!(response.headers()[CONTENT_LENGTH], bytes.len().to_string());
+    assert_eq!(response.collect().await.unwrap().to_bytes(), "hello from server", "{encoding}");
+  }
+}
+
+#[tokio::test]
+async fn test_fetch_corrupt_supported_codings_error() {
+  for encoding in ["gzip", "deflate", "br", "zstd"] {
+    let response = http::Response::builder().header(CONTENT_ENCODING, encoding)
+      .body(http_body_util::Full::new(Bytes::from_static(&[255;8]))
+      .map_err(|never|match never {}).boxed()).unwrap();
+    assert!(crate::decompress_response(response,false).collect().await.is_err(), "{encoding}");
+  }
 }
 
 #[tokio::test]
@@ -964,7 +1011,7 @@ impl crate::HttpTransport for EncodedTransport {
     Box::pin(async move {
       assert_eq!(request.headers()["user-agent"], "fetch/test");
       assert_eq!(request.headers()["accept"], "*/*");
-      assert_eq!(request.headers()[ACCEPT_ENCODING], "gzip,br");
+      assert_eq!(request.headers()[ACCEPT_ENCODING], "gzip, deflate, br, zstd");
       Ok(
         http::Response::builder()
           .header(CONTENT_ENCODING, "gzip")

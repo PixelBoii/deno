@@ -27,6 +27,7 @@ use std::task::Poll;
 
 use async_compression::tokio::bufread::BrotliDecoder;
 use async_compression::tokio::bufread::GzipDecoder;
+use async_compression::tokio::bufread::{ZlibDecoder, ZstdDecoder};
 use bytes::Bytes;
 // Re-export data_url
 pub use data_url;
@@ -1359,8 +1360,14 @@ fn prepare_decompression_request(req: &mut http::Request<ReqBody>) -> bool {
       .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"identity"));
   let encoding = if req.headers().contains_key(RANGE) {
     "identity"
+  } else if req.uri().scheme_str() == Some("https") || req.uri().host().is_some_and(|host| {
+    let host = host.trim_start_matches('[').trim_end_matches(']').trim_end_matches('.');
+    host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".localhost")
+      || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+  }) {
+    "gzip, deflate, br, zstd"
   } else {
-    "gzip,br"
+    "gzip, deflate"
   };
   req
     .headers_mut()
@@ -1377,7 +1384,7 @@ fn decompress_response(
     return resp;
   }
 
-  // Some servers advertise a compressed empty body. A valid gzip/br stream is
+  // Some servers advertise a compressed empty body. A valid compressed stream is
   // never zero bytes, so pass empty bodies through instead of trying to decode.
   let is_empty = resp
     .headers()
@@ -1389,26 +1396,31 @@ fn decompress_response(
     return resp;
   }
 
-  match resp
-    .headers()
-    .get(CONTENT_ENCODING)
-    .and_then(content_encoding_decode_kind)
-  {
-    Some(DecodeKind::Gzip) => decode_response(resp, DecodeKind::Gzip),
-    Some(DecodeKind::Brotli) => decode_response(resp, DecodeKind::Brotli),
-    _ => resp,
+  // All codings must be supported before decoding any part. Coding order is
+  // application order, so unwrap the outermost coding first.
+  let codings = resp.headers().get_all(CONTENT_ENCODING).iter()
+    .map(|header| header.to_str().ok().and_then(|value| value.split(',')
+      .map(content_encoding_decode_kind).collect::<Option<Vec<_>>>()))
+    .collect::<Option<Vec<_>>>();
+  if let Some(codings) = codings {
+    let mut resp = resp;
+    for kind in codings.into_iter().flatten().rev() { resp = decode_response(resp, kind); }
+    resp
+  } else {
+    resp
   }
 }
 
-fn content_encoding_decode_kind(encoding: &HeaderValue) -> Option<DecodeKind> {
-  let encoding = std::str::from_utf8(encoding.as_bytes()).ok()?.trim();
-  if encoding.contains(',') {
-    return None;
-  }
-  if encoding.eq_ignore_ascii_case("gzip") {
+fn content_encoding_decode_kind(encoding: &str) -> Option<DecodeKind> {
+  let encoding = encoding.trim();
+  if encoding.eq_ignore_ascii_case("gzip") || encoding.eq_ignore_ascii_case("x-gzip") {
     Some(DecodeKind::Gzip)
   } else if encoding.eq_ignore_ascii_case("br") {
     Some(DecodeKind::Brotli)
+  } else if encoding.eq_ignore_ascii_case("deflate") {
+    Some(DecodeKind::Deflate)
+  } else if encoding.eq_ignore_ascii_case("zstd") {
+    Some(DecodeKind::Zstd)
   } else {
     None
   }
@@ -1417,6 +1429,8 @@ fn content_encoding_decode_kind(encoding: &HeaderValue) -> Option<DecodeKind> {
 enum DecodeKind {
   Gzip,
   Brotli,
+  Deflate,
+  Zstd,
 }
 
 /// Marker inserted into the response extensions when the body was
@@ -1444,6 +1458,8 @@ fn decode_response(
   let body = match kind {
     DecodeKind::Gzip => box_reader_body(GzipDecoder::new(reader)),
     DecodeKind::Brotli => box_reader_body(BrotliDecoder::new(reader)),
+    DecodeKind::Deflate => box_reader_body(ZlibDecoder::new(reader)),
+    DecodeKind::Zstd => box_reader_body(ZstdDecoder::new(reader)),
   };
 
   http::Response::from_parts(parts, body)

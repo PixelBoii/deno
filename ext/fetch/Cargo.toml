@@ -14,7 +14,7 @@ description = "Fetch API implementation for Deno"
 path = "lib.rs"
 
 [dependencies]
-async-compression = { workspace = true, features = ["tokio", "brotli", "gzip"] }
+async-compression = { workspace = true, features = ["tokio", "brotli", "gzip", "zlib", "zstd"] }
 base64.workspace = true
 bytes.workspace = true
 data-url.workspace = true
