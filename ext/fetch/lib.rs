@@ -40,6 +40,7 @@ use deno_core::CancelTryFuture;
 use deno_core::Canceled;
 use deno_core::FromV8;
 use deno_core::OpState;
+use deno_core::serde_json;
 use deno_core::RcRef;
 use deno_core::Resource;
 use deno_core::ResourceId;
@@ -130,6 +131,9 @@ pub struct Options {
   #[allow(clippy::type_complexity, reason = "TODO: improve")]
   pub request_builder_hook:
     Option<fn(&mut http::Request<ReqBody>) -> Result<(), JsErrorBox>>,
+  /// Embedder-only request context, kept in native request extensions rather
+  /// than wire headers. Missing context remains compatible with default fetch.
+  pub request_context_hook: Option<RequestContextHook>,
   pub unsafely_ignore_certificate_errors: Option<Vec<String>>,
   pub client_cert_chain_and_key: TlsKeys,
   pub file_fetch_handler: Rc<dyn FetchHandler>,
@@ -154,6 +158,7 @@ impl Default for Options {
       proxy: None,
       client_builder_hook: None,
       request_builder_hook: None,
+      request_context_hook: None,
       unsafely_ignore_certificate_errors: None,
       client_cert_chain_and_key: TlsKeys::Null,
       file_fetch_handler: Rc::new(DefaultFileFetchHandler),
@@ -293,6 +298,13 @@ pub type CancelableResponseFuture =
 pub type HttpTransportFuture = Pin<
   Box<dyn Future<Output = Result<http::Response<ResBody>, JsErrorBox>> + Send>,
 >;
+
+pub type RequestContextHook = fn(
+  &mut deno_core::v8::PinScope,
+  &mut OpState,
+  &mut http::Request<ReqBody>,
+  Option<deno_core::serde_json::Value>,
+) -> Result<(), JsErrorBox>;
 
 /// An embedder-supplied HTTP transport. Bodies are encoded wire bytes; fetch
 /// applies its normal content-decoding policy to the returned response.
@@ -472,6 +484,7 @@ impl Drop for ResourceToBodyAdapter {
 #[allow(clippy::large_enum_variant, reason = "TODO: investigate")]
 #[allow(clippy::result_large_err, reason = "TODO: investigate")]
 pub fn op_fetch(
+  scope: &mut v8::PinScope,
   state: &mut OpState,
   #[scoped] method: ByteString,
   #[string] url: String,
@@ -480,6 +493,7 @@ pub fn op_fetch(
   has_body: bool,
   data: Option<Uint8Array>,
   #[smi] resource: Option<ResourceId>,
+  #[serde] transport_context: Option<serde_json::Value>,
 ) -> Result<FetchReturn, FetchError> {
   let (client, allow_host) = if let Some(rid) = client_rid {
     let r = state.resource_table.get::<HttpClientResource>(rid)?;
@@ -582,6 +596,13 @@ pub fn op_fetch(
         .flatten();
       if let Some(request_builder_hook) = options.request_builder_hook {
         request_builder_hook(&mut request)
+          .map_err(FetchError::RequestBuilderHook)?;
+      }
+      let context_hook = options.request_context_hook;
+      if http_transport.is_some()
+        && let Some(hook) = context_hook
+      {
+        hook(scope, state, &mut request, transport_context)
           .map_err(FetchError::RequestBuilderHook)?;
       }
 

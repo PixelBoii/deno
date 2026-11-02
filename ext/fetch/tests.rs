@@ -1024,3 +1024,50 @@ fn test_embedder_transport_range_and_identity() {
     assert_eq!(request.headers()[ACCEPT_ENCODING], "identity");
   }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_embedder_transport_context_is_optional_and_not_a_header() {
+  fn context_hook(
+    _: &mut deno_core::v8::PinScope,
+    state: &mut deno_core::OpState,
+    request: &mut http::Request<crate::ReqBody>,
+    context: Option<deno_core::serde_json::Value>,
+  ) -> Result<(), deno_error::JsErrorBox> {
+    assert!(!request.headers().keys().any(|name| name.as_str().contains("context")));
+    state.borrow_mut::<Vec<Option<deno_core::serde_json::Value>>>().push(context);
+    Ok(())
+  }
+  let mut runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+    extensions: vec![deno_core::Extension {
+      name: "fetch_context_test",
+      ops: vec![crate::op_fetch()].into(),
+      ..Default::default()
+    }],
+    ..Default::default()
+  });
+  {
+    let state = runtime.op_state();
+    let mut state = state.borrow_mut();
+    state.put(create_http_test_client());
+    state.put(PermissionsContainer::allow_all(Arc::new(
+      RuntimePermissionDescriptorParser::new(sys_traits::impls::RealSys),
+    )));
+    state.put(crate::Options {
+      http_transport: Some(Arc::new(EncodedTransport)),
+      request_context_hook: Some(context_hook),
+      ..Default::default()
+    });
+    state.put(Vec::<Option<deno_core::serde_json::Value>>::new());
+  }
+  runtime.execute_script("legacy-and-context-fetch", r#"
+    Deno.core.ops.op_fetch('GET', 'https://example.test/', [], null, false, null, null);
+    Deno.core.ops.op_fetch('GET', 'https://example.test/', [], null, false, null, null,
+      {partition:'native-only'});
+  "#).unwrap();
+  let state = runtime.op_state();
+  let state = state.borrow();
+  let contexts = state.borrow::<Vec<Option<deno_core::serde_json::Value>>>();
+  assert_eq!(contexts.len(), 2);
+  assert!(contexts[0].is_none());
+  assert_eq!(contexts[1].as_ref().unwrap()["partition"], "native-only");
+}
