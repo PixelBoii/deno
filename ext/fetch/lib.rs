@@ -20,6 +20,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -813,15 +814,24 @@ pub struct FetchResponseResource {
   pub response_reader: AsyncRefCell<FetchResponseReader>,
   pub cancel: CancelHandle,
   pub size: Option<u64>,
+  encoded_size: Option<EncodedBodySize>,
 }
 
 impl FetchResponseResource {
   pub fn new(response: http::Response<ResBody>, size: Option<u64>) -> Self {
+    let encoded_size = response.extensions().get::<EncodedBodySize>().cloned();
     Self {
       response_reader: AsyncRefCell::new(FetchResponseReader::Start(response)),
       cancel: CancelHandle::default(),
       size,
+      encoded_size,
     }
+  }
+
+  /// Bytes received from the transport before content decoding. This stays
+  /// available while the resource is owned, including after an EOF read.
+  pub fn encoded_body_size(&self) -> Option<u64> {
+    self.encoded_size.as_ref().map(EncodedBodySize::get)
   }
 
   pub async fn upgrade(self) -> Result<hyper::upgrade::Upgraded, hyper::Error> {
@@ -1376,10 +1386,15 @@ fn prepare_decompression_request(req: &mut http::Request<ReqBody>) -> bool {
   skip
 }
 
-fn decompress_response(
-  resp: http::Response<ResBody>,
+pub fn decompress_response(
+  mut resp: http::Response<ResBody>,
   skip_decompression: bool,
 ) -> http::Response<ResBody> {
+  if resp.extensions().get::<EncodedBodySize>().is_none() {
+    let count = EncodedBodySize::default();
+    resp.extensions_mut().insert(count.clone());
+    resp = resp.map(|body| EncodedSizeBody { body, count }.boxed());
+  }
   if skip_decompression {
     return resp;
   }
@@ -1439,6 +1454,48 @@ enum DecodeKind {
 /// wire body rather than the body in the response.
 #[derive(Clone, Copy)]
 pub struct BodyDecoded;
+
+/// A response-local wire-body byte count, independent of Content-Length and
+/// of how many decoding layers or consumer reads a response needs.
+#[derive(Clone, Debug, Default)]
+pub struct EncodedBodySize(Arc<AtomicU64>);
+
+impl EncodedBodySize {
+  pub fn get(&self) -> u64 {
+    self.0.load(Ordering::Relaxed)
+  }
+}
+
+struct EncodedSizeBody {
+  body: ResBody,
+  count: EncodedBodySize,
+}
+
+impl hyper::body::Body for EncodedSizeBody {
+  type Data = Bytes;
+  type Error = JsErrorBox;
+
+  fn poll_frame(
+    mut self: Pin<&mut Self>,
+    cx: &mut Context<'_>,
+  ) -> Poll<Option<Result<Frame<Bytes>, JsErrorBox>>> {
+    let result = Pin::new(&mut self.body).poll_frame(cx);
+    if let Poll::Ready(Some(Ok(frame))) = &result
+      && let Some(data) = frame.data_ref()
+    {
+      self.count.0.fetch_add(data.len() as u64, Ordering::Relaxed);
+    }
+    result
+  }
+
+  fn is_end_stream(&self) -> bool {
+    self.body.is_end_stream()
+  }
+
+  fn size_hint(&self) -> hyper::body::SizeHint {
+    self.body.size_hint()
+  }
+}
 
 fn decode_response(
   resp: http::Response<ResBody>,

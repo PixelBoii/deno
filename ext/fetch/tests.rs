@@ -612,15 +612,43 @@ async fn test_fetch_decodes_deflate_zstd_and_stacked_codings() {
     ("gzip, br", &[11,18,128,31,139,8,0,0,0,0,0,0,3,203,72,205,201,201,87,72,43,202,207,85,40,78,45,42,75,45,2,0,36,32,168,41,17,0,0,0,3]),
   ];
   for (encoding, bytes) in cases {
-    let response = http::Response::builder().header(CONTENT_ENCODING, *encoding)
-      .header(CONTENT_LENGTH, bytes.len()).body(http_body_util::Full::new(Bytes::copy_from_slice(bytes))
+   for with_length in [false,true] {
+    let response = http::Response::builder().header(CONTENT_ENCODING, *encoding);
+    let response = if with_length { response.header(CONTENT_LENGTH, bytes.len()) } else { response };
+    let response = response.body(http_body_util::Full::new(Bytes::copy_from_slice(bytes))
       .map_err(|never|match never {}).boxed()).unwrap();
     let response = crate::decompress_response(response, false);
     assert!(response.extensions().get::<crate::BodyDecoded>().is_some());
     assert_eq!(response.headers()[CONTENT_ENCODING], *encoding);
-    assert_eq!(response.headers()[CONTENT_LENGTH], bytes.len().to_string());
+    if with_length { assert_eq!(response.headers()[CONTENT_LENGTH], bytes.len().to_string()); }
+    else { assert!(!response.headers().contains_key(CONTENT_LENGTH)); }
+    let count = response.extensions().get::<crate::EncodedBodySize>().unwrap().clone();
+    assert_eq!(count.get(),0);
     assert_eq!(response.collect().await.unwrap().to_bytes(), "hello from server", "{encoding}");
+    assert_eq!(count.get(),bytes.len() as u64, "{encoding}");
+   }
   }
+}
+
+#[tokio::test]
+async fn test_encoded_body_size_survives_partial_resource_reads() {
+  use deno_core::Resource;
+  let frames = [b"abc".as_slice(),b"",b"defgh"].into_iter().map(|bytes|
+    Ok::<_,deno_error::JsErrorBox>(hyper::body::Frame::data(Bytes::from_static(bytes))));
+  let body = http_body_util::StreamBody::new(deno_core::futures::stream::iter(frames)).boxed();
+  let response = crate::decompress_response(http::Response::new(body),true);
+  // A second decoding-policy pass must not count a body twice.
+  let response = crate::decompress_response(response,true);
+  let resource = std::rc::Rc::new(crate::FetchResponseResource::new(response,None));
+  assert_eq!(resource.encoded_body_size(),Some(0));
+  let mut received=Vec::new();
+  loop {
+    let chunk=resource.clone().read(2).await.unwrap();
+    if chunk.is_empty() {break;}
+    received.extend_from_slice(&chunk);
+  }
+  assert_eq!(received,b"abcdefgh");
+  assert_eq!(resource.encoded_body_size(),Some(8));
 }
 
 #[tokio::test]
