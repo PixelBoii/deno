@@ -48,6 +48,7 @@
     op_current_user_call_site,
     op_compile_function,
     op_create_host_function,
+    op_create_console_method,
     op_mark_host_interface,
     op_has_host_interface,
     op_decode,
@@ -753,19 +754,21 @@
   //
   // Inspired by:
   // https://github.com/nodejs/node/blob/1317252dfe8824fd9cfee125d2aaa94004db2f3b/lib/internal/util/inspector.js#L39-L61
-  function wrapConsole(customConsole, consoleFromV8) {
+  function wrapConsole(customConsole, consoleFromV8, nativeMethods = false) {
     const callConsole = window.Deno.core.callConsole;
 
     const keys = ObjectKeys(consoleFromV8);
     for (let i = 0; i < keys.length; ++i) {
       const key = keys[i];
       if (ObjectHasOwn(customConsole, key)) {
-        customConsole[key] = FunctionPrototypeBind(
-          callConsole,
-          customConsole,
-          consoleFromV8[key],
-          customConsole[key],
-        );
+        customConsole[key] = nativeMethods
+          ? op_create_console_method(consoleFromV8[key], customConsole[key], customConsole, key)
+          : FunctionPrototypeBind(
+            callConsole,
+            customConsole,
+            consoleFromV8[key],
+            customConsole[key],
+          );
         // Restore the original method name clobbered by the bind above
         // ("bound callConsole"), like Node does in its `wrapConsole`.
         ObjectDefineProperty(customConsole[key], "name", {

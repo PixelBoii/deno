@@ -14,6 +14,31 @@ use crate::runtime::NO_OF_BUILTIN_MODULES;
 use crate::*;
 
 #[test]
+fn test_native_console_after_snapshot() {
+  let _snapshot_lock = super::snapshot_test_lock();
+  let snapshot = {
+    let mut runtime = JsRuntimeForSnapshot::new(Default::default());
+    runtime.execute_script("console-snapshot.js", r#"
+      let rejected=false;
+      try {Deno.core.wrapConsole({log(){}},{log:Deno.core.v8Console.log},true);}
+      catch(error) {rejected=error instanceof TypeError && error.message.includes('snapshot');}
+      if(!rejected)throw Error('snapshot creation must reject console callback data');
+      globalThis.consoleAfterSnapshot=()=>{
+        let calls=0;const custom={log(){calls++;}};
+        Deno.core.wrapConsole(custom,{log:Deno.core.v8Console.log},true);
+        custom.log('restored console');
+        return calls===1 && Function.prototype.toString.call(custom.log)==='function log() { [native code] }';
+      };
+    "#).unwrap();
+    runtime.snapshot()
+  };
+  let mut runtime=JsRuntime::new(RuntimeOptions {
+    startup_snapshot:Some(Box::leak(snapshot)),..Default::default()
+  });
+  runtime.execute_script("restored-console.js", "if(!consoleAfterSnapshot())throw Error('console restoration');").unwrap();
+}
+
+#[test]
 fn test_host_function_after_snapshot() {
   let _snapshot_lock = super::snapshot_test_lock();
   let snapshot = {

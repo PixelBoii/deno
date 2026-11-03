@@ -150,6 +150,47 @@ pub struct HostFunctionRequiredArguments {
   prefix: String,
 }
 
+// Keep the inspector invocation on a native frame. A JavaScript dispatcher or
+// bound callConsole function loses the console method's source identity or the
+// inspector's user call site.
+fn console_method_callback(
+  scope: &mut v8::PinScope,
+  args: v8::FunctionCallbackArguments,
+  _rv: v8::ReturnValue,
+) {
+  let data = v8::Local::<v8::Array>::try_from(args.data()).unwrap();
+  let inspector = data.get_index(scope, 0).unwrap();
+  let inspector = v8::Local::<v8::Function>::try_from(inspector).unwrap();
+  let implementation = data.get_index(scope, 1).unwrap();
+  let implementation = v8::Local::<v8::Function>::try_from(implementation).unwrap();
+  let receiver = data.get_index(scope, 2).unwrap();
+  let values: Vec<_> = (0..args.length()).map(|index| args.get(index)).collect();
+  if inspector.call(scope, receiver, &values).is_none() { return; }
+  implementation.call(scope, receiver, &values);
+}
+
+#[op2]
+pub fn op_create_console_method<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+  inspector: v8::Local<'s, v8::Function>,
+  implementation: v8::Local<'s, v8::Function>,
+  receiver: v8::Local<'s, v8::Object>,
+  name: v8::Local<'s, v8::String>,
+) -> Result<v8::Local<'s, v8::Function>, JsErrorBox> {
+  if JsRealm::module_map_from(scope).is_snapshotting() {
+    return Err(JsErrorBox::type_error("Console methods must be created after restoring a snapshot"));
+  }
+  let data = v8::Array::new_with_elements(scope, &[inspector.into(), implementation.into(), receiver.into()]);
+  let function = v8::Function::builder(console_method_callback)
+    .data(data.into())
+    .length(0)
+    .constructor_behavior(v8::ConstructorBehavior::Throw)
+    .build(scope)
+    .ok_or_else(|| JsErrorBox::generic("Could not create console method"))?;
+  function.set_name(name);
+  Ok(function)
+}
+
 #[op2]
 pub fn op_create_host_function<'s>(
   scope: &mut v8::PinScope<'s, '_>,

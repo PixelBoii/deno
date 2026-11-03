@@ -32,6 +32,51 @@ use crate::runtime::tests::setup;
 use crate::*;
 
 #[test]
+fn test_native_console_methods() {
+  let mut runtime = JsRuntime::new(RuntimeOptions { inspector: true, ..Default::default() });
+  let (tx, rx) = std::sync::mpsc::channel();
+  let callback = Box::new(move |message: InspectorMsg| {
+    let value: Value = serde_json::from_str(&message.content).unwrap();
+    if value["method"] == "Runtime.consoleAPICalled" { tx.send(value).unwrap(); }
+  });
+  let mut session = JsRuntimeInspector::create_local_session(
+    runtime.inspector(), callback,
+    inspector::InspectorSessionKind::NonBlocking { wait_for_disconnect: false },
+  );
+  session.post_message(1, "Runtime.enable", Some(json!({})));
+  runtime.execute_script("native-console.js", r#"
+    const check = (value, message) => { if (!value) throw new Error(message); };
+    const calls = [];
+    const sentinel = {};
+    const custom = {log(...args) {
+      check(this === custom, 'console receiver');
+      if (args[0] === 'throw') throw sentinel;
+      calls.push(args);return 42;
+    }};
+    Deno.core.wrapConsole(custom, {log:Deno.core.v8Console.log}, true);
+    const method=custom.log, source=Function.prototype.toString.call(method);
+    check(method.name==='log' && method.length===0 && !Object.hasOwn(method,'prototype'), 'console metadata');
+    check(source==='function log() { [native code] }', 'native console source');
+    Object.defineProperty(method,'name',{value:'authorName',configurable:true});
+    check(Function.prototype.toString.call(method)===source, 'source name is independent of author metadata');
+    let construction;
+    try { Reflect.construct(method, []); } catch(error) { construction=error; }
+    check(construction instanceof TypeError && construction.message.includes('function log()'), 'native construction error');
+    function userConsoleCall() { check(method.call(null, 'native console backend', 19)===undefined,'console returns undefined'); }
+    userConsoleCall();
+    check(calls.length===1 && calls[0][1]===19, 'console arguments reach the implementation');
+    try {method('throw');throw new Error('console exception swallowed');}
+    catch(error) {check(error===sentinel,'console exception identity');}
+  "#).unwrap();
+  let messages: Vec<_> = rx.try_iter().collect();
+  let message = messages.iter().find(|message|
+    message["params"]["args"][0]["value"] == "native console backend").unwrap();
+  let frames = message["params"]["stackTrace"]["callFrames"].as_array().unwrap();
+  assert_eq!(frames[0]["functionName"], "userConsoleCall");
+  assert_eq!(frames[0]["url"], "native-console.js");
+}
+
+#[test]
 fn test_host_function_api() {
   let mut runtime = JsRuntime::new(Default::default());
   runtime.execute_script("host-function.js", r#"
