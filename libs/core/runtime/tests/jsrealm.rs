@@ -16,6 +16,107 @@ use crate::modules::StaticModuleLoader;
 use crate::op2;
 
 #[test]
+fn test_new_realm_with_embedder_context() {
+  struct Marker(u32);
+  #[op2(fast)]
+  fn op_context_marker(scope: &mut v8::PinScope) -> u32 {
+    scope
+      .get_current_context()
+      .get_slot::<Marker>()
+      .map_or(0, |v| v.0)
+  }
+  deno_core::extension!(context_test, ops = [op_context_marker]);
+  let mut runtime = JsRuntime::new(RuntimeOptions {
+    extensions: vec![context_test::init()],
+    ..Default::default()
+  });
+  let context = {
+    deno_core::scope!(scope, runtime);
+    let template = v8::ObjectTemplate::new(scope);
+    template.set_internal_field_count(2);
+    let context = v8::Context::new(
+      scope,
+      v8::ContextOptions {
+        global_template: Some(template),
+        ..Default::default()
+      },
+    );
+    context.set_slot(Rc::new(Marker(17)));
+    v8::Global::new(scope, context)
+  };
+  let realm = runtime
+    .new_realm(crate::CreateRealmOptions {
+      context: Some(context.clone()),
+      ..Default::default()
+    })
+    .unwrap();
+  realm.execute_script(runtime.v8_isolate(), "realm.js", r#"
+    if (Deno.core.ops.op_context_marker() !== 17) throw Error('wrong op context');
+    globalThis.realmValue = 42;
+    Promise.resolve().then(() => { globalThis.realmJob = 'done'; });
+  "#).unwrap();
+  futures::executor::block_on(runtime.run_event_loop(Default::default()))
+    .unwrap();
+  realm
+    .execute_script(
+      runtime.v8_isolate(),
+      "realm-job.js",
+      "if (realmJob !== 'done') throw Error('realm job did not run');",
+    )
+    .unwrap();
+  runtime
+    .execute_script(
+      "main.js",
+      r#"
+    if (Deno.core.ops.op_context_marker() !== 0 || 'realmValue' in globalThis)
+      throw Error('realm state leaked into main');
+  "#,
+    )
+    .unwrap();
+  assert!(
+    runtime
+      .new_realm(crate::CreateRealmOptions {
+        context: Some(context),
+        ..Default::default()
+      })
+      .is_err()
+  );
+  let main = runtime.main_context();
+  assert!(
+    runtime
+      .new_realm(crate::CreateRealmOptions {
+        context: Some(main),
+        ..Default::default()
+      })
+      .is_err()
+  );
+  let plain_context = {
+    deno_core::scope!(scope, runtime);
+    let context = v8::Context::new(scope, Default::default());
+    v8::Global::new(scope, context)
+  };
+  assert!(
+    runtime
+      .new_realm(crate::CreateRealmOptions {
+        context: Some(plain_context),
+        ..Default::default()
+      })
+      .is_err()
+  );
+  let ordinary = runtime.new_realm(Default::default()).unwrap();
+  ordinary
+    .execute_script(
+      runtime.v8_isolate(),
+      "ordinary.js",
+      r#"
+    if (Deno.core.ops.op_context_marker() !== 0 || 'realmValue' in globalThis)
+      throw Error('independent default realm');
+  "#,
+    )
+    .unwrap();
+}
+
+#[test]
 fn test_set_format_exception_callback_realms() {
   let mut runtime = JsRuntime::new(RuntimeOptions::default());
   let main_realm = runtime.main_realm();

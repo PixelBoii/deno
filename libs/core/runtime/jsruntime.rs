@@ -740,6 +740,13 @@ pub struct CreateRealmOptions {
   ///
   /// If not provided, the main realm's module loader is used.
   pub module_loader: Option<Rc<dyn ModuleLoader>>,
+  /// A fresh V8 context constructed by the embedder in this runtime's isolate.
+  /// This enables native global-proxy reuse while still initializing a new
+  /// module map, op driver, core JS, and extension JS for the document realm.
+  /// The global template must have two internal fields. Template middleware is
+  /// the embedder's responsibility; global-object middleware still runs here.
+  /// A context already registered with this runtime cannot be initialized twice.
+  pub context: Option<v8::Global<v8::Context>>,
 }
 
 #[macro_export]
@@ -907,12 +914,45 @@ impl JsRuntime {
       v8::scope_with_context!(scope, scope, main_realm.context());
       let security_token =
         scope.get_current_context().get_security_token(scope);
-      let context = create_context(
-        scope,
-        &template.global_template_middlewares,
-        &template.global_object_middlewares,
-        false,
-      );
+      let context = if let Some(context) = options.context {
+        let context = v8::Local::new(scope, context);
+        if context.global(scope).internal_field_count() != 2 {
+          return Err(
+            JsErrorBox::type_error(
+              "A realm global template must have two internal fields",
+            )
+            .into(),
+          );
+        }
+        if state_rc
+          .realms
+          .borrow()
+          .iter()
+          .any(|realm| v8::Local::new(scope, realm.context()) == context)
+        {
+          return Err(
+            JsErrorBox::type_error(
+              "The context is already registered with this runtime",
+            )
+            .into(),
+          );
+        }
+        {
+          let scope = &mut v8::ContextScope::new(scope, context);
+          let global = context.global(scope);
+          for middleware in &template.global_object_middlewares {
+            middleware(scope, global);
+          }
+        }
+        context
+      } else {
+        create_context(
+          scope,
+          &template.global_template_middlewares,
+          &template.global_object_middlewares,
+          false,
+        )
+      };
       context.set_security_token(security_token);
       let context = v8::Global::new(scope, context);
       Self::initialize_realm(
