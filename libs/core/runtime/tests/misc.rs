@@ -2459,6 +2459,28 @@ fn test_native_wrappers_require_serialization_support() {
   "#).unwrap();
 }
 
+#[test]
+fn test_storage_serialization_rejects_shared_memory() {
+  let mut runtime = JsRuntime::new(RuntimeOptions::default());
+  runtime.execute_script("storage-serialization", r#"
+    function check(value, message) {if (!value) throw Error(message);}
+    const shared=new SharedArrayBuffer(16);
+    const module=new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0]));
+    for(const value of [shared,{shared},module,{module}]) {
+      const sentinel=new RangeError('storage clone rejection');
+      let caught;
+      try {Deno.core.serialize(value,{forStorage:true},()=>{throw sentinel;});}
+      catch(error) {caught=error;}
+      check(caught===sentinel,'storage rejection uses the supplied data-clone error callback');
+    }
+    const input=new Uint8Array([3,5,8]);
+    const bytes=Deno.core.serialize({input},{forStorage:true});
+    const output=Deno.core.deserialize(bytes,{forStorage:true});
+    input[0]=99;
+    check(output.input.join(',')==='3,5,8'&&input.byteLength===3,'storage serialization copies ordinary buffers');
+  "#).unwrap();
+}
+
 #[tokio::test]
 async fn test_native_webidl_receiver_errors() {
   struct BrowserReceiver;

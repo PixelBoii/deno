@@ -920,6 +920,8 @@ impl v8::ValueSerializerImpl for SerializeDeserialize<'_> {
     shared_array_buffer: v8::Local<'s, v8::SharedArrayBuffer>,
   ) -> Option<u32> {
     if self.for_storage {
+      let message = v8::String::new(scope, "SharedArrayBuffer cannot be stored")?;
+      self.throw_data_clone_error(scope, message);
       return None;
     }
     let Ok(cluster) = shared_memory_cluster(scope) else {
