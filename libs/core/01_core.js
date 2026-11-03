@@ -48,6 +48,8 @@
     op_current_user_call_site,
     op_compile_function,
     op_create_host_function,
+    op_mark_host_interface,
+    op_has_host_interface,
     op_decode,
     op_deserialize,
     op_destructure_error,
@@ -1160,6 +1162,8 @@
       return [result, null];
     },
     createHostFunction: op_create_host_function,
+    markHostInterface: op_mark_host_interface,
+    hasHostInterface: op_has_host_interface,
     evalContext: (
       source,
       specifier,

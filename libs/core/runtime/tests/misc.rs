@@ -100,10 +100,21 @@ fn test_host_function_api() {
     try {required.call({});throw new Error('receiver accepted');}
     catch(error) {check(error.message==='Illegal invocation', 'receiver check precedes argument count');}
     check(dispatches===2,'argument check never enters dispatcher');
+    const real = {value:45};
+    const before = Reflect.ownKeys(real);
+    Deno.core.markHostInterface(real, 'TestInterface');
+    check(Deno.core.hasHostInterface(real, 'TestInterface'), 'private interface brand');
+    check(!Deno.core.hasHostInterface(real, 'OtherInterface'), 'interface brands are distinct');
+    check(Reflect.ownKeys(real).length===before.length, 'interface brand is not reflected');
+    check(!Deno.core.hasHostInterface({...real}, 'TestInterface'), 'copy is not a host interface');
+    const proxy = new Proxy(real, {get(){throw sentinel;},has(){throw sentinel;}});
+    check(!Deno.core.hasHostInterface(proxy, 'TestInterface'), 'proxy is rejected without traps');
+    globalThis.retainedInterface = real;
   "#).unwrap();
   runtime.v8_isolate().low_memory_notification();
   runtime.v8_isolate().perform_microtask_checkpoint();
   runtime.execute_script("host-function-microtasks.js", "if (!receiverRejectionObserved) throw new Error('receiver rejection was not delivered')").unwrap();
+  runtime.execute_script("host-interface-gc.js", "if (!Deno.core.hasHostInterface(retainedInterface, 'TestInterface')) throw new Error('interface brand was not retained')").unwrap();
   runtime.execute_script("retained-host-function.js", "if (retainedHostFunction() !== 43) throw new Error('callback was not traced')").unwrap();
 }
 

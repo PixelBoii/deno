@@ -85,6 +85,14 @@ export namespace core {
     requiredArguments?: {count: number; prefix: string},
   ): Function;
 
+  /** Register a real host interface instance using a private V8 brand.
+   * This does not change structured serialization or add any public properties.
+   * The brand is shared across realms in one isolate; proxies and copies do not
+   * inherit it. These primitives are only for trusted embedding initialization.
+   */
+  function markHostInterface(object: object, name: string): void;
+  function hasHostInterface(value: unknown, name: string): boolean;
+
   /**
    * Retrieve a list of all open resources, in the form of a map that maps
    * resource id to the resource name.

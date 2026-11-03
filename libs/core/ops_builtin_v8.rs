@@ -48,6 +48,37 @@ pub fn mark_as_unserializable_host_object(
   assert_eq!(object.set_private(scope, key, value.into()), Some(true));
 }
 
+fn host_interface_key<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+  name: &str,
+) -> v8::Local<'s, v8::Private> {
+  let name = v8::String::new(scope, &format!("Deno.core.hostInterface::{name}")).unwrap();
+  v8::Private::for_api(scope, Some(name))
+}
+
+#[op2(fast)]
+pub fn op_mark_host_interface(
+  scope: &mut v8::PinScope,
+  object: v8::Local<v8::Object>,
+  #[string] name: String,
+) {
+  let key = host_interface_key(scope, &name);
+  let value = v8::Boolean::new(scope, true);
+  assert_eq!(object.set_private(scope, key, value.into()), Some(true));
+}
+
+#[op2(nofast)]
+pub fn op_has_host_interface(
+  scope: &mut v8::PinScope,
+  value: v8::Local<v8::Value>,
+  #[string] name: String,
+) -> bool {
+  if value.is_proxy() { return false; }
+  let Ok(object) = v8::Local::<v8::Object>::try_from(value) else { return false; };
+  let key = host_interface_key(scope, &name);
+  object.get_private(scope, key).is_some_and(|value| value.is_true())
+}
+
 // API functions retain a JS implementation in their callback data. V8 owns that
 // reference, so closures (including ones in another realm) are traced normally.
 fn host_function_callback(

@@ -792,6 +792,7 @@ function createReadableByteStream(
  * @returns {void}
  */
 function initializeReadableStream(stream) {
+  core.markHostInterface(stream, "ReadableStream");
   stream[_state] = "readable";
   stream[_reader] = stream[_storedError] = undefined;
   stream[_disturbed] = false;
