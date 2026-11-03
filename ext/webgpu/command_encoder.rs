@@ -56,7 +56,7 @@ unsafe impl GarbageCollected for GPUCommandEncoder {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUCommandEncoder {
   #[constructor]
   #[cppgc]

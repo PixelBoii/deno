@@ -40,7 +40,7 @@ unsafe impl GarbageCollected for GPUComputePipeline {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUComputePipeline {
   #[constructor]
   #[cppgc]

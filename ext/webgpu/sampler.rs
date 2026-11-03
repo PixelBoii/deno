@@ -33,7 +33,7 @@ unsafe impl GarbageCollected for GPUSampler {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUSampler {
   #[constructor]
   #[cppgc]

@@ -47,7 +47,7 @@ unsafe impl GarbageCollected for GPUBindGroup {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUBindGroup {
   #[constructor]
   #[cppgc]

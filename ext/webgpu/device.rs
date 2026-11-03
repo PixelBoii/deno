@@ -88,7 +88,7 @@ unsafe impl GarbageCollected for GPUDevice {
 }
 
 // EventTarget is extended in JS
-#[op2]
+#[op2(webidl)]
 impl GPUDevice {
   #[constructor]
   #[cppgc]
@@ -1002,7 +1002,7 @@ unsafe impl GarbageCollected for GPUDeviceLostInfo {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUDeviceLostInfo {
   #[constructor]
   #[cppgc]

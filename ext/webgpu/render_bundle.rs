@@ -47,7 +47,7 @@ unsafe impl GarbageCollected for GPURenderBundleEncoder {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPURenderBundleEncoder {
   #[constructor]
   #[cppgc]
@@ -462,7 +462,7 @@ unsafe impl GarbageCollected for GPURenderBundle {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPURenderBundle {
   #[constructor]
   #[cppgc]

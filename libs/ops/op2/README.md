@@ -205,6 +205,11 @@ obj.value = 10;
 - `#[fast]` — Regular methods. Use `&self` as the first parameter to receive the
   native object.
 
+Use `#[op2(webidl)]` on native WebIDL interface implementations. Their receiver
+checks create a plain `TypeError` at the native boundary, with operation context
+for asynchronous methods. Unmarked implementations retain their Node-compatible
+`ERR_INVALID_THIS` errors. This option can be combined with `base` and `inherit`.
+
 ## Inheritance
 
 CppGC objects support a prototype-based inheritance model that mirrors

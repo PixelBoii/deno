@@ -146,7 +146,7 @@ unsafe impl GarbageCollected for GPUBuffer {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUBuffer {
   #[constructor]
   #[cppgc]

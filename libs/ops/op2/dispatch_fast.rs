@@ -371,6 +371,9 @@ fn throw_invalid_this_type_error(
   generator_state: &mut GeneratorState,
   message: impl std::fmt::Display,
 ) -> TokenStream {
+  if generator_state.webidl {
+    return throw_type_error(generator_state, "Illegal invocation");
+  }
   let create_scope = create_scope(generator_state);
   let message = format!("{message}");
   quote!({

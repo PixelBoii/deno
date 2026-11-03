@@ -72,7 +72,7 @@ unsafe impl GarbageCollected for GPUAdapter {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUAdapter {
   #[constructor]
   #[cppgc]
@@ -274,7 +274,7 @@ unsafe impl GarbageCollected for GPUSupportedLimits {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUSupportedLimits {
   #[constructor]
   #[cppgc]
@@ -493,7 +493,7 @@ impl GPUSupportedFeatures {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUSupportedFeatures {
   #[constructor]
   #[cppgc]
@@ -520,7 +520,7 @@ unsafe impl GarbageCollected for GPUAdapterInfo {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUAdapterInfo {
   #[constructor]
   #[cppgc]

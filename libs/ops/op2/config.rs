@@ -38,6 +38,8 @@ pub struct MacroConfig {
   pub method: Option<Ident>,
   /// Same as method name but also used by static and constructor ops.
   pub self_name: Option<Ident>,
+  /// Use WebIDL receiver errors for an explicitly marked native interface.
+  pub webidl: bool,
   /// Marks an op as a constructor
   pub constructor: bool,
   /// Marks an op as a static member

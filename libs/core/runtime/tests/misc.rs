@@ -2447,6 +2447,61 @@ fn test_native_wrappers_require_serialization_support() {
   "#).unwrap();
 }
 
+#[tokio::test]
+async fn test_native_webidl_receiver_errors() {
+  struct BrowserReceiver;
+  struct NodeReceiver;
+  unsafe impl GarbageCollected for BrowserReceiver {
+    fn trace(&self, _: &mut v8::cppgc::Visitor) {}
+    fn get_name(&self) -> &'static std::ffi::CStr { c"BrowserReceiver" }
+  }
+  unsafe impl GarbageCollected for NodeReceiver {
+    fn trace(&self, _: &mut v8::cppgc::Visitor) {}
+    fn get_name(&self) -> &'static std::ffi::CStr { c"NodeReceiver" }
+  }
+  #[op2(webidl)]
+  impl BrowserReceiver {
+    #[constructor]
+    #[cppgc]
+    fn constructor() -> BrowserReceiver { BrowserReceiver }
+    #[fast]
+    fn value(&self) -> u32 { 7 }
+    async fn later(&self) -> u32 { 7 }
+  }
+  #[op2]
+  impl NodeReceiver {
+    #[constructor]
+    #[cppgc]
+    fn constructor() -> NodeReceiver { NodeReceiver }
+    #[fast]
+    fn value(&self) -> u32 { 9 }
+  }
+  extension!(receivers, objects = [BrowserReceiver, NodeReceiver]);
+  let mut runtime = JsRuntime::new(RuntimeOptions {
+    extensions: vec![receivers::init()],
+    ..Default::default()
+  });
+  runtime.execute_script("native-receiver-errors", r#"
+    const {BrowserReceiver,NodeReceiver}=Deno.core.ops;
+    const check=(value)=>{if(!value)throw Error('native receiver check')};
+    const browser=new BrowserReceiver(),node=new NodeReceiver();
+    for(let i=0;i<12000;i++)check(browser.value()===7&&node.value()===9);
+    function failure(operation,receiver) {try{operation.call(receiver)}catch(error){return error}throw Error('receiver accepted');}
+    for(const receiver of [{},node,new Proxy(browser,{})]) {
+      const error=failure(BrowserReceiver.prototype.value,receiver);
+      check(error instanceof TypeError&&error.message==='Illegal invocation'&&!('code' in error));
+    }
+    const nodeError=failure(NodeReceiver.prototype.value,browser);
+    check(nodeError instanceof TypeError&&nodeError.code==='ERR_INVALID_THIS'&&nodeError.message==='expected NodeReceiver');
+    let complete=false;
+    const promise=BrowserReceiver.prototype.later.call({});
+    check(promise instanceof Promise);
+    promise.catch(error=>{check(error instanceof TypeError&&!('code' in error)&&error.message==="Failed to execute 'later' on 'BrowserReceiver': Illegal invocation");complete=true;});
+  "#).unwrap();
+  runtime.run_event_loop(Default::default()).await.unwrap();
+  runtime.execute_script("receiver-complete", "check(complete)").unwrap();
+}
+
 #[test]
 fn test_private_unserializable_host_object() {
   let mut runtime = JsRuntime::new(RuntimeOptions::default());

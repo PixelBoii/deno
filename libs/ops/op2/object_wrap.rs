@@ -145,6 +145,7 @@ pub(crate) fn generate_impl_ops(
       }
 
       config.self_name = Some(format_ident!("{}", self_ty_ident));
+      config.webidl = args.webidl;
 
       let op =
         generate_op2(config, func).map_err(|e| e.with_default_span(span))?;
@@ -196,12 +197,14 @@ pub(crate) fn generate_impl_ops(
 struct Args {
   is_base: bool,
   inherits_from: Option<syn::Type>,
+  webidl: bool,
 }
 
 impl syn::parse::Parse for Args {
   fn parse(input: ParseStream) -> syn::Result<Self> {
     let mut is_base = false;
     let mut inherits_from = None;
+    let mut webidl = false;
 
     while !input.is_empty() {
       let lookahead = input.lookahead1();
@@ -212,6 +215,9 @@ impl syn::parse::Parse for Args {
         input.parse::<super::kw::inherit>()?;
         input.parse::<Token![=]>()?;
         inherits_from = Some(input.parse::<syn::Type>()?);
+      } else if lookahead.peek(super::kw::webidl) {
+        input.parse::<super::kw::webidl>()?;
+        webidl = true;
       } else {
         return Err(lookahead.error());
       }
@@ -222,6 +228,7 @@ impl syn::parse::Parse for Args {
     Ok(Args {
       is_base,
       inherits_from,
+      webidl,
     })
   }
 }

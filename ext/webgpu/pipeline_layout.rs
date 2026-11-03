@@ -35,7 +35,7 @@ unsafe impl GarbageCollected for GPUPipelineLayout {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUPipelineLayout {
   #[constructor]
   #[cppgc]

@@ -107,7 +107,7 @@ unsafe impl GarbageCollected for GPUTexture {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUTexture {
   #[constructor]
   #[cppgc]
@@ -298,7 +298,7 @@ unsafe impl GarbageCollected for GPUTextureView {
 }
 // TODO(@crowlKats): weakref in texture for view
 
-#[op2]
+#[op2(webidl)]
 impl GPUTextureView {
   #[constructor]
   #[cppgc]
@@ -737,5 +737,5 @@ unsafe impl GarbageCollected for GPUExternalTexture {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUExternalTexture {}

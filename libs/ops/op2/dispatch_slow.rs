@@ -361,10 +361,16 @@ pub(crate) fn with_self(
 ) -> TokenStream {
   generator_state.needs_opctx = true;
   generator_state.needs_scope = true;
-  let throw_exception = throw_invalid_this_type_error(
-    generator_state,
-    format!("expected {}", &generator_state.self_ty),
-  );
+  let message = if generator_state.webidl {
+    if ret_val.is_async() || generator_state.is_fake_async {
+      format!("{}: Illegal invocation", get_prefix(generator_state))
+    } else {
+      "Illegal invocation".to_owned()
+    }
+  } else {
+    format!("expected {}", &generator_state.self_ty)
+  };
+  let throw_exception = throw_invalid_this_type_error(generator_state, message);
   if ret_val.is_async() {
     let tokens = gs_quote!(generator_state(self_ty, fn_args, scope, try_unwrap_cppgc) => {
       let Some(mut self_) = deno_core::_ops::#try_unwrap_cppgc::<#self_ty>(&mut #scope, #fn_args.this().into()) else {
@@ -1305,6 +1311,9 @@ fn throw_invalid_this_type_error(
   generator_state: &mut GeneratorState,
   message: String,
 ) -> TokenStream {
+  if generator_state.webidl {
+    return throw_type_error(generator_state, message);
+  }
   debug_assert!(message.is_ascii() && message.len() < 1024);
 
   gs_quote!(generator_state(info) => {

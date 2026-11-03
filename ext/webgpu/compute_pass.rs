@@ -34,7 +34,7 @@ unsafe impl GarbageCollected for GPUComputePassEncoder {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUComputePassEncoder {
   #[constructor]
   #[cppgc]

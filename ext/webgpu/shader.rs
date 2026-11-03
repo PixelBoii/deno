@@ -37,7 +37,7 @@ unsafe impl GarbageCollected for GPUShaderModule {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUShaderModule {
   #[constructor]
   #[cppgc]
@@ -94,7 +94,7 @@ unsafe impl GarbageCollected for GPUCompilationMessage {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUCompilationMessage {
   #[getter]
   #[string]
@@ -191,7 +191,7 @@ unsafe impl GarbageCollected for GPUCompilationInfo {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUCompilationInfo {
   #[getter]
   fn messages(&self) -> v8::Global<v8::Object> {

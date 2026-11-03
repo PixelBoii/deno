@@ -279,7 +279,10 @@ pub(crate) fn generate_op2(
 
   let base_generator_state = GeneratorState {
     name,
-    webidl_name: config.rename.clone().unwrap_or_else(|| orig_name.to_string()),
+    webidl_name: config
+      .rename
+      .clone()
+      .unwrap_or_else(|| orig_name.to_string()),
     args: args.clone(),
     fn_args,
     scope,
@@ -298,6 +301,7 @@ pub(crate) fn generate_op2(
     fast_function_metrics,
     promise_id,
     self_ty,
+    webidl: config.webidl,
     moves: vec![],
     needs_retval: false,
     needs_scope: false,
@@ -502,6 +506,7 @@ fn combine_err(e: syn::Error, msg: String) -> syn::Error {
 mod kw {
   syn::custom_keyword!(base);
   syn::custom_keyword!(inherit);
+  syn::custom_keyword!(webidl);
 }
 
 #[cfg(test)]

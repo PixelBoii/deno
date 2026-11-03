@@ -45,7 +45,7 @@ unsafe impl GarbageCollected for GPUQueue {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUQueue {
   #[constructor]
   #[cppgc]

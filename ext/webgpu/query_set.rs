@@ -36,7 +36,7 @@ unsafe impl GarbageCollected for GPUQuerySet {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUQuerySet {
   #[constructor]
   #[cppgc]

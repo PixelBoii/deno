@@ -31,7 +31,7 @@ unsafe impl GarbageCollected for GPUCommandBuffer {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUCommandBuffer {
   #[constructor]
   #[cppgc]

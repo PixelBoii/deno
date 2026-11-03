@@ -42,7 +42,7 @@ unsafe impl GarbageCollected for GPURenderPassEncoder {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPURenderPassEncoder {
   #[constructor]
   #[cppgc]

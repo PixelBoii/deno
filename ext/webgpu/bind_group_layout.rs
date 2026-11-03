@@ -33,7 +33,7 @@ unsafe impl GarbageCollected for GPUBindGroupLayout {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUBindGroupLayout {
   #[constructor]
   #[cppgc]

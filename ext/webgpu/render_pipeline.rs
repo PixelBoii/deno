@@ -44,7 +44,7 @@ unsafe impl GarbageCollected for GPURenderPipeline {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPURenderPipeline {
   #[constructor]
   #[cppgc]

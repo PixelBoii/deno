@@ -188,7 +188,7 @@ unsafe impl GarbageCollected for GPU {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPU {
   #[constructor]
   #[cppgc]
@@ -275,7 +275,7 @@ impl WGSLLanguageFeatures {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl WGSLLanguageFeatures {
   #[constructor]
   #[cppgc]

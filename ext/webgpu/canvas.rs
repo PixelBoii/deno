@@ -67,7 +67,7 @@ unsafe impl GarbageCollected for GPUCanvasContext {
   }
 }
 
-#[op2]
+#[op2(webidl)]
 impl GPUCanvasContext {
   #[getter]
   fn canvas(&self) -> v8::Global<v8::Object> {
