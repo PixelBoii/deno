@@ -89,8 +89,17 @@ fn host_function_callback(
   let data = v8::Local::<v8::Array>::try_from(args.data()).unwrap();
   let callback = data.get_index(scope, 0).unwrap();
   let callback = v8::Local::<v8::Function>::try_from(callback).unwrap();
-  let mut failure = None;
-  if args.new_target().is_undefined() {
+  let mut failure = if data.get_index(scope, 7).unwrap().is_true() {
+    let prefix = data.get_index(scope, 4).unwrap().to_rust_string_lossy(scope);
+    Some(if prefix.is_empty() {
+      "Illegal constructor".to_string()
+    } else {
+      format!("{prefix}: Illegal constructor")
+    })
+  } else {
+    None
+  };
+  if failure.is_none() && args.new_target().is_undefined() {
     let checker = data.get_index(scope, 1).unwrap();
     if let Ok(checker) = v8::Local::<v8::Function>::try_from(checker) {
       let receiver = v8::undefined(scope).into();
@@ -220,6 +229,7 @@ pub fn op_create_host_function<'s>(
   #[serde] required_arguments: Option<HostFunctionRequiredArguments>,
   first_argument_check: Option<v8::Local<'s, v8::Function>>,
   #[string] first_argument_interface: Option<String>,
+  illegal_constructor: bool,
 ) -> Result<v8::Local<'s, v8::Function>, JsErrorBox> {
   // Binding JS callback data during snapshot generation is not supported.
   // Reject it explicitly instead of passing this graph to V8's serializer.
@@ -239,7 +249,8 @@ pub fn op_create_host_function<'s>(
   let argument_checker = first_argument_check.map(v8::Local::<v8::Value>::from)
     .unwrap_or_else(|| v8::undefined(scope).into());
   let interface = v8::String::new(scope, first_argument_interface.as_deref().unwrap_or("Object")).unwrap();
-  let data = v8::Array::new_with_elements(scope, &[callback.into(), checker, promise.into(), count.into(), prefix.into(), argument_checker, interface.into()]);
+  let illegal_constructor = v8::Boolean::new(scope, illegal_constructor);
+  let data = v8::Array::new_with_elements(scope, &[callback.into(), checker, promise.into(), count.into(), prefix.into(), argument_checker, interface.into(), illegal_constructor.into()]);
   let function = v8::Function::builder(host_function_callback)
     .data(data.into())
     .length(length)

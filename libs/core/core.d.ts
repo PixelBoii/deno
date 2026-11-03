@@ -74,6 +74,7 @@ export namespace core {
    * Set promise for a promise-returning API to reject instead of throwing when
    * receiverCheck returns false. It does not wrap the dispatcher's result.
    * requiredArguments checks arity before dispatch, after receiver validation.
+   * illegalConstructor rejects abstract interfaces before JS dispatch.
    */
   function createHostFunction(
     callback: (receiver: unknown, args: unknown[], newTarget: Function | undefined) => unknown,
@@ -83,6 +84,9 @@ export namespace core {
     receiverCheck?: (receiver: unknown) => boolean,
     promise?: boolean,
     requiredArguments?: {count: number; prefix: string},
+    firstArgumentCheck?: (value: unknown) => boolean,
+    firstArgumentInterface?: string,
+    illegalConstructor?: boolean,
   ): Function;
 
   /** Register a real host interface instance using a private V8 brand.

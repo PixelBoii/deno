@@ -151,6 +151,18 @@ fn test_host_function_api() {
     try {required.call({});throw new Error('receiver accepted');}
     catch(error) {check(error.message==='Illegal invocation', 'receiver check precedes argument count');}
     check(dispatches===2,'argument check never enters dispatcher');
+    const abstractInterface = create(() => {dispatches++;}, 'AbstractInterface', 0, true,
+      undefined, false, undefined, undefined, undefined, true);
+    for (const call of [() => abstractInterface(), () => new abstractInterface()]) {
+      try {call(); throw new Error('abstract interface constructed');}
+      catch (error) {check(error instanceof TypeError && error.message==='Illegal constructor', 'native illegal constructor');}
+    }
+    check(dispatches===2,'illegal constructor never enters dispatcher');
+    const labelledAbstract = create(() => {dispatches++;}, 'AbstractInterface', 0, true,
+      undefined, false, {count:0,prefix:"Failed to construct 'AbstractInterface'"}, undefined, undefined, true);
+    try {new labelledAbstract();throw new Error('abstract constructor accepted');}
+    catch(error) {check(error.message==="Failed to construct 'AbstractInterface': Illegal constructor", 'constructor error retains interface context');}
+    check(dispatches===2,'labelled illegal constructor never enters dispatcher');
     const real = {value:45};
     const before = Reflect.ownKeys(real);
     Deno.core.markHostInterface(real, 'TestInterface');
