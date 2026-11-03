@@ -98,7 +98,13 @@ fn host_function_callback(
         return; // Preserve a validator's own exception unchanged.
       };
       if !valid.boolean_value(scope) {
-        failure = Some("Illegal invocation".to_string());
+        let promise = data.get_index(scope, 2).unwrap().is_true();
+        let prefix = data.get_index(scope, 4).unwrap().to_rust_string_lossy(scope);
+        failure = Some(if promise && !prefix.is_empty() {
+          format!("{prefix}: Illegal invocation")
+        } else {
+          "Illegal invocation".to_string()
+        });
       }
     }
   }

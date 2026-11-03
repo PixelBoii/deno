@@ -279,6 +279,7 @@ pub(crate) fn generate_op2(
 
   let base_generator_state = GeneratorState {
     name,
+    webidl_name: config.rename.clone().unwrap_or_else(|| orig_name.to_string()),
     args: args.clone(),
     fn_args,
     scope,

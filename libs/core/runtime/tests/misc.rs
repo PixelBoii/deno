@@ -90,6 +90,12 @@ fn test_host_function_api() {
       check(!error.stack.includes('receiverValidation'), 'async rejection stack');
       globalThis.receiverRejectionObserved = true;
     });
+    const labelledAsync = create(() => { throw sentinel; }, 'labelled', 2, false,
+      () => false, true, {count:2,prefix:"Failed to execute 'labelled' on 'Interface'"});
+    labelledAsync.call({}).catch(error => {
+      check(error.message === "Failed to execute 'labelled' on 'Interface': Illegal invocation", 'async receiver retains operation context');
+      globalThis.labelledReceiverRejectionObserved = true;
+    });
     const required = create(() => {dispatches++;}, 'required', 2, false,
       receiver => receiver === accepted, false, {count:2,prefix:"Failed to execute 'required' on 'Interface'"});
     try {required.call(accepted, {toString(){throw sentinel;}}); throw new Error('arity check missing');}
@@ -113,7 +119,7 @@ fn test_host_function_api() {
   "#).unwrap();
   runtime.v8_isolate().low_memory_notification();
   runtime.v8_isolate().perform_microtask_checkpoint();
-  runtime.execute_script("host-function-microtasks.js", "if (!receiverRejectionObserved) throw new Error('receiver rejection was not delivered')").unwrap();
+  runtime.execute_script("host-function-microtasks.js", "if (!receiverRejectionObserved || !labelledReceiverRejectionObserved) throw new Error('receiver rejection was not delivered')").unwrap();
   runtime.execute_script("host-interface-gc.js", "if (!Deno.core.hasHostInterface(retainedInterface, 'TestInterface')) throw new Error('interface brand was not retained')").unwrap();
   runtime.execute_script("retained-host-function.js", "if (retainedHostFunction() !== 43) throw new Error('callback was not traced')").unwrap();
 }

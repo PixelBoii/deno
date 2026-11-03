@@ -6,6 +6,8 @@ use proc_macro2::TokenStream;
 #[derive(Clone)]
 pub struct GeneratorState {
   pub name: Ident,
+  /// Public operation name, distinct from the internal Rust `call` function.
+  pub webidl_name: String,
   /// Identifiers for each of the arguments of the original function
   pub args: Vec<Ident>,
   /// The result of the `call` function

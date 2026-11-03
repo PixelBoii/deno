@@ -281,14 +281,14 @@ pub(crate) fn get_prefix(generator_state: &mut GeneratorState) -> String {
   if generator_state.needs_self {
     format!(
       "Failed to execute '{}' on '{}'",
-      generator_state.name, generator_state.self_ty
+      generator_state.webidl_name, generator_state.self_ty
     )
   } else if generator_state.use_this_cppgc {
     format!("Failed to construct '{}'", generator_state.self_ty)
   } else {
     format!(
       "Failed to execute '{}.{}'",
-      generator_state.self_ty, generator_state.name
+      generator_state.self_ty, generator_state.webidl_name
     )
   }
 }
@@ -318,7 +318,7 @@ pub(crate) fn with_required_check(
       let present = #fn_args.length() - #async_offset;
       let mut msg = #message_prefix.to_string();
       msg.push_str(&present.to_string());
-      msg.push_str(" present");
+      msg.push_str(" present.");
       let msg = deno_core::v8::String::new(&mut #scope, &msg).unwrap();
       let exception = deno_core::v8::Exception::type_error(&mut #scope, msg.into());
       #scope.throw_exception(exception);
