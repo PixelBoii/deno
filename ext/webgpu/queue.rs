@@ -49,7 +49,7 @@ unsafe impl GarbageCollected for GPUQueue {
 impl GPUQueue {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUQueue, GPUGenericError> {
+  fn constructor() -> Result<GPUQueue, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

@@ -53,9 +53,11 @@ const {
 const webidl = core.loadExtScript("ext:deno_webidl/00_webidl.js");
 const {
   defineEventHandler,
+  dispatch,
   Event,
   EventTargetPrototype,
   setEventTargetData,
+  setIsTrusted,
 } = core.loadExtScript("ext:deno_web/02_event.js");
 const { DOMException } = core.loadExtScript("ext:deno_web/01_dom_exception.js");
 const { createFilteredInspectProxy } = core.loadExtScript(
@@ -120,9 +122,13 @@ class GPUOutOfMemoryError extends GPUError {
 core.registerErrorClass("GPUOutOfMemoryError", GPUOutOfMemoryError);
 
 class GPUInternalError extends GPUError {
-  constructor() {
+  constructor(message) {
+    const prefix = "Failed to construct 'GPUInternalError'";
+    webidl.requiredArguments(arguments.length, 1, prefix);
+    message = webidl.converters.DOMString(message, prefix, "Argument 1");
     super(illegalConstructorKey);
     this[webidl.brand] = webidl.brand;
+    this[_message] = message;
   }
 }
 core.registerErrorClass("GPUInternalError", GPUInternalError);
@@ -903,13 +909,18 @@ const denoNsWebGPU = {
 };
 
 let gpu;
+function dispatchGPUError(device, error) {
+  const event = new GPUUncapturedErrorEvent("uncapturederror", { __proto__: null, error });
+  setIsTrusted(event, true);
+  dispatch(device, event);
+}
 function initGPU() {
   if (!gpu) {
     gpu = op_create_gpu(
       webidl.brand,
       setEventTargetData,
-      GPUUncapturedErrorEvent,
       GPUPipelineError,
+      dispatchGPUError,
     );
   }
 }

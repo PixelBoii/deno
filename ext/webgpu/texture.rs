@@ -111,7 +111,7 @@ unsafe impl GarbageCollected for GPUTexture {
 impl GPUTexture {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUTexture, GPUGenericError> {
+  fn constructor() -> Result<GPUTexture, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 
@@ -302,7 +302,7 @@ unsafe impl GarbageCollected for GPUTextureView {
 impl GPUTextureView {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUTextureView, GPUGenericError> {
+  fn constructor() -> Result<GPUTextureView, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

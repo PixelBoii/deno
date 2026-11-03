@@ -60,7 +60,7 @@ unsafe impl GarbageCollected for GPUCommandEncoder {
 impl GPUCommandEncoder {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUCommandEncoder, GPUGenericError> {
+  fn constructor() -> Result<GPUCommandEncoder, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

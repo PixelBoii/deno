@@ -5,7 +5,6 @@ use std::fmt::Formatter;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
-use deno_core::JsRuntime;
 use deno_core::V8TaskSpawner;
 use deno_core::cppgc::make_cppgc_object;
 use deno_core::v8;
@@ -90,6 +89,10 @@ impl DeviceErrorHandler {
       if let Some(resolver) = self.lost_resolver.lock().unwrap().take() {
         self.spawner.spawn(move |scope| {
           let resolver = v8::Local::new(scope, resolver);
+          let Some(context) = resolver.get_creation_context(scope) else {
+            return;
+          };
+          let scope = &mut v8::ContextScope::new(scope, context);
           let info = make_cppgc_object(scope, GPUDeviceLostInfo { reason });
           let info = v8::Local::new(scope, info);
           resolver.resolve(scope, info.into());
@@ -123,38 +126,24 @@ impl DeviceErrorHandler {
         .expect("set_device was not called")
         .clone();
       self.spawner.spawn(move |scope| {
-        let state = JsRuntime::op_state_from(&*scope);
         let Some(device) = device.to_local(scope) else {
           // The device has already gone away, so we don't have
           // anywhere to report the error.
           return;
         };
-        let key = v8::String::new(scope, "dispatchEvent").unwrap();
-        let val = device.get(scope, key.into()).unwrap();
-        let func =
-          v8::Global::new(scope, val.try_cast::<v8::Function>().unwrap());
-        let device = v8::Global::new(scope, device.cast::<v8::Value>());
-        let error_event_class =
-          state.borrow().borrow::<crate::ErrorEventClass>().0.clone();
-
+        let Some(context) = device.get_creation_context(scope) else {
+          return;
+        };
+        let scope = &mut v8::ContextScope::new(scope, context);
+        v8::tc_scope!(let scope, scope);
+        let dispatch = crate::gpu_realm_binding(
+          scope,
+          crate::GPURealmBinding::DispatchError,
+        )
+        .cast::<v8::Function>();
         let error = deno_core::error::to_v8_error(scope, &err);
-
-        let error_event_class =
-          v8::Local::new(scope, error_event_class.clone());
-        let constructor =
-          v8::Local::<v8::Function>::try_from(error_event_class).unwrap();
-        let kind = v8::String::new(scope, "uncapturederror").unwrap();
-
-        let obj = v8::Object::new(scope);
-        let key = v8::String::new(scope, "error").unwrap();
-        obj.set(scope, key.into(), error);
-
-        let event = constructor
-          .new_instance(scope, &[kind.into(), obj.into()])
-          .unwrap();
-
-        let recv = v8::Local::new(scope, device);
-        func.open(scope).call(scope, recv, &[event.into()]);
+        let undefined = v8::undefined(scope);
+        dispatch.call(scope, undefined.into(), &[device.into(), error]);
       });
     }
   }
@@ -409,14 +398,9 @@ pub(crate) fn make_pipeline_error<'a>(
   reason: GPUPipelineErrorReason,
   message: &str,
 ) -> v8::Local<'a, v8::Object> {
-  let state = JsRuntime::op_state_from(scope);
-  let class = state
-    .borrow()
-    .borrow::<crate::PipelineErrorClass>()
-    .0
-    .clone();
   let constructor =
-    v8::Local::<v8::Function>::try_from(v8::Local::new(scope, class)).unwrap();
+    crate::gpu_realm_binding(scope, crate::GPURealmBinding::PipelineError)
+      .cast::<v8::Function>();
   let message_str = v8::String::new(scope, message).unwrap();
   let reason_str = v8::String::new(scope, &reason.to_string()).unwrap();
 

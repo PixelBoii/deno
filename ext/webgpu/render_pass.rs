@@ -46,7 +46,7 @@ unsafe impl GarbageCollected for GPURenderPassEncoder {
 impl GPURenderPassEncoder {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPURenderPassEncoder, GPUGenericError> {
+  fn constructor() -> Result<GPURenderPassEncoder, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

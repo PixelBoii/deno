@@ -51,7 +51,7 @@ unsafe impl GarbageCollected for GPUBindGroup {
 impl GPUBindGroup {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUBindGroup, GPUGenericError> {
+  fn constructor() -> Result<GPUBindGroup, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

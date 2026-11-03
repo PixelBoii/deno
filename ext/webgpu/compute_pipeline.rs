@@ -44,7 +44,7 @@ unsafe impl GarbageCollected for GPUComputePipeline {
 impl GPUComputePipeline {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUComputePipeline, GPUGenericError> {
+  fn constructor() -> Result<GPUComputePipeline, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

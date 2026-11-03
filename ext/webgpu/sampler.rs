@@ -37,7 +37,7 @@ unsafe impl GarbageCollected for GPUSampler {
 impl GPUSampler {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUSampler, GPUGenericError> {
+  fn constructor() -> Result<GPUSampler, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

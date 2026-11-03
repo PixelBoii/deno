@@ -37,7 +37,7 @@ unsafe impl GarbageCollected for GPUBindGroupLayout {
 impl GPUBindGroupLayout {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUBindGroupLayout, GPUGenericError> {
+  fn constructor() -> Result<GPUBindGroupLayout, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

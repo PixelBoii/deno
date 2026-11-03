@@ -76,7 +76,7 @@ unsafe impl GarbageCollected for GPUAdapter {
 impl GPUAdapter {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUAdapter, GPUGenericError> {
+  fn constructor() -> Result<GPUAdapter, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 
@@ -111,9 +111,10 @@ impl GPUAdapter {
   }
 
   #[async_method(fake)]
+  #[reentrant]
   fn request_device(
     &self,
-    state: &mut OpState,
+    state: Rc<std::cell::RefCell<OpState>>,
     scope: &mut v8::PinScope<'_, '_>,
     #[webidl] descriptor: GPUDeviceDescriptor,
   ) -> Result<v8::Global<v8::Value>, CreateDeviceError> {
@@ -175,7 +176,7 @@ impl GPUAdapter {
     scope
       .adjust_amount_of_external_allocated_memory(DEVICE_EXTERNAL_MEMORY_SIZE);
 
-    let spawner = state.borrow::<V8TaskSpawner>().clone();
+    let spawner = state.borrow().borrow::<V8TaskSpawner>().clone();
     let lost_resolver = v8::PromiseResolver::new(scope).unwrap();
     let lost_promise = lost_resolver.get_promise(scope);
     let error_handler = Rc::new(super::error::DeviceErrorHandler::new(
@@ -215,12 +216,14 @@ impl GPUAdapter {
     };
     let device = deno_core::cppgc::make_cppgc_object(scope, device);
     let weak_device = v8::Weak::new(scope, device);
-    let event_target_setup = state.borrow::<crate::EventTargetSetup>();
-    let webidl_brand = v8::Local::new(scope, event_target_setup.brand.clone());
+    let webidl_brand =
+      crate::gpu_realm_binding(scope, crate::GPURealmBinding::Brand);
     device.set(scope, webidl_brand, webidl_brand);
-    let set_event_target_data =
-      v8::Local::new(scope, event_target_setup.set_event_target_data.clone())
-        .cast::<v8::Function>();
+    let set_event_target_data = crate::gpu_realm_binding(
+      scope,
+      crate::GPURealmBinding::SetEventTargetData,
+    )
+    .cast::<v8::Function>();
     let null = v8::null(scope);
     set_event_target_data.call(scope, null.into(), &[device.into()]);
 
@@ -275,7 +278,7 @@ unsafe impl GarbageCollected for GPUSupportedLimits {
 impl GPUSupportedLimits {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUSupportedLimits, GPUGenericError> {
+  fn constructor() -> Result<GPUSupportedLimits, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 
@@ -494,7 +497,7 @@ impl GPUSupportedFeatures {
 impl GPUSupportedFeatures {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUSupportedFeatures, GPUGenericError> {
+  fn constructor() -> Result<GPUSupportedFeatures, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 
@@ -521,7 +524,7 @@ unsafe impl GarbageCollected for GPUAdapterInfo {
 impl GPUAdapterInfo {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUAdapterInfo, GPUGenericError> {
+  fn constructor() -> Result<GPUAdapterInfo, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

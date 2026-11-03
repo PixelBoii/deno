@@ -38,7 +38,7 @@ unsafe impl GarbageCollected for GPUComputePassEncoder {
 impl GPUComputePassEncoder {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUComputePassEncoder, GPUGenericError> {
+  fn constructor() -> Result<GPUComputePassEncoder, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

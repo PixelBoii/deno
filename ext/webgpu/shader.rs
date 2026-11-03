@@ -41,7 +41,7 @@ unsafe impl GarbageCollected for GPUShaderModule {
 impl GPUShaderModule {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUShaderModule, GPUGenericError> {
+  fn constructor() -> Result<GPUShaderModule, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

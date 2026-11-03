@@ -125,36 +125,55 @@ deno_core::extension!(
 #[op2]
 #[cppgc]
 pub fn op_create_gpu(
-  state: &mut OpState,
   scope: &mut v8::PinScope<'_, '_>,
   webidl_brand: v8::Local<v8::Value>,
   set_event_target_data: v8::Local<v8::Value>,
-  uncaptured_error_event_class: v8::Local<v8::Value>,
   pipeline_error_class: v8::Local<v8::Value>,
+  dispatch_error: v8::Local<v8::Value>,
 ) -> GPU {
-  state.put(EventTargetSetup {
-    brand: v8::Global::new(scope, webidl_brand),
-    set_event_target_data: v8::Global::new(scope, set_event_target_data),
-  });
-  state.put(ErrorEventClass(v8::Global::new(
+  // A JsRuntime can host several Window realms. Keeping these functions in
+  // OpState would let the most recently initialized realm replace the others'
+  // constructors, and would root that realm for the isolate's lifetime.
+  let bindings = v8::Array::new_with_elements(
     scope,
-    uncaptured_error_event_class,
-  )));
-  state.put(PipelineErrorClass(v8::Global::new(
-    scope,
-    pipeline_error_class,
-  )));
+    &[
+      webidl_brand,
+      set_event_target_data,
+      pipeline_error_class,
+      dispatch_error,
+    ],
+  );
+  let key = gpu_realm_bindings_key(scope);
+  let global = scope.get_current_context().global(scope);
+  global.set_private(scope, key, bindings.into());
   GPU {
     wgsl_language_features: SameObject::new(),
   }
 }
 
-struct EventTargetSetup {
-  brand: v8::Global<v8::Value>,
-  set_event_target_data: v8::Global<v8::Value>,
+enum GPURealmBinding {
+  Brand,
+  SetEventTargetData,
+  PipelineError,
+  DispatchError,
 }
-struct ErrorEventClass(v8::Global<v8::Value>);
-struct PipelineErrorClass(v8::Global<v8::Value>);
+
+fn gpu_realm_bindings_key<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+) -> v8::Local<'s, v8::Private> {
+  let name = v8::String::new(scope, "Deno.webgpu.realmBindings").unwrap();
+  v8::Private::for_api(scope, Some(name))
+}
+
+fn gpu_realm_binding<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+  binding: GPURealmBinding,
+) -> v8::Local<'s, v8::Value> {
+  let key = gpu_realm_bindings_key(scope);
+  let global = scope.get_current_context().global(scope);
+  let bindings = global.get_private(scope, key).unwrap().cast::<v8::Array>();
+  bindings.get_index(scope, binding as u32).unwrap()
+}
 
 pub struct GPU {
   pub wgsl_language_features: SameObject<WGSLLanguageFeatures>,
@@ -173,7 +192,7 @@ unsafe impl GarbageCollected for GPU {
 impl GPU {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPU, GPUGenericError> {
+  fn constructor() -> Result<GPU, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 
@@ -260,7 +279,7 @@ impl WGSLLanguageFeatures {
 impl WGSLLanguageFeatures {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<WGSLLanguageFeatures, GPUGenericError> {
+  fn constructor() -> Result<WGSLLanguageFeatures, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

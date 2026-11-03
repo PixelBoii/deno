@@ -35,7 +35,7 @@ unsafe impl GarbageCollected for GPUCommandBuffer {
 impl GPUCommandBuffer {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUCommandBuffer, GPUGenericError> {
+  fn constructor() -> Result<GPUCommandBuffer, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

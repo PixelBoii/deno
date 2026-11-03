@@ -48,7 +48,7 @@ unsafe impl GarbageCollected for GPURenderPipeline {
 impl GPURenderPipeline {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPURenderPipeline, GPUGenericError> {
+  fn constructor() -> Result<GPURenderPipeline, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

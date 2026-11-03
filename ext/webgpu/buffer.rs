@@ -150,7 +150,7 @@ unsafe impl GarbageCollected for GPUBuffer {
 impl GPUBuffer {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUBuffer, GPUGenericError> {
+  fn constructor() -> Result<GPUBuffer, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

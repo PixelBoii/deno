@@ -40,7 +40,7 @@ unsafe impl GarbageCollected for GPUQuerySet {
 impl GPUQuerySet {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUQuerySet, GPUGenericError> {
+  fn constructor() -> Result<GPUQuerySet, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

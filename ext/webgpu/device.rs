@@ -92,7 +92,7 @@ unsafe impl GarbageCollected for GPUDevice {
 impl GPUDevice {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUDevice, GPUGenericError> {
+  fn constructor() -> Result<GPUDevice, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 
@@ -533,6 +533,7 @@ impl GPUDevice {
   }
 
   #[async_method(fake)]
+  #[reentrant]
   #[required(1)]
   fn create_compute_pipeline_async(
     &self,
@@ -558,6 +559,7 @@ impl GPUDevice {
   }
 
   #[async_method(fake)]
+  #[reentrant]
   #[required(1)]
   fn create_render_pipeline_async(
     &self,
@@ -741,6 +743,7 @@ impl GPUDevice {
   }
 
   #[async_method(fake)]
+  #[reentrant]
   fn pop_error_scope(
     &self,
     scope: &mut v8::PinScope<'_, '_>,
@@ -1003,7 +1006,7 @@ unsafe impl GarbageCollected for GPUDeviceLostInfo {
 impl GPUDeviceLostInfo {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUDeviceLostInfo, GPUGenericError> {
+  fn constructor() -> Result<GPUDeviceLostInfo, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

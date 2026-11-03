@@ -39,7 +39,7 @@ unsafe impl GarbageCollected for GPUPipelineLayout {
 impl GPUPipelineLayout {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPUPipelineLayout, GPUGenericError> {
+  fn constructor() -> Result<GPUPipelineLayout, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 

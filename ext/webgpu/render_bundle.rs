@@ -51,7 +51,7 @@ unsafe impl GarbageCollected for GPURenderBundleEncoder {
 impl GPURenderBundleEncoder {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPURenderBundleEncoder, GPUGenericError> {
+  fn constructor() -> Result<GPURenderBundleEncoder, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 
@@ -466,7 +466,7 @@ unsafe impl GarbageCollected for GPURenderBundle {
 impl GPURenderBundle {
   #[constructor]
   #[cppgc]
-  fn constructor(_: bool) -> Result<GPURenderBundle, GPUGenericError> {
+  fn constructor() -> Result<GPURenderBundle, GPUGenericError> {
     Err(GPUGenericError::InvalidConstructor)
   }
 
