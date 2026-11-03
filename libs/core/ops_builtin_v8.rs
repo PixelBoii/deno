@@ -971,9 +971,13 @@ impl v8::ValueSerializerImpl for SerializeDeserialize<'_> {
     if object.has_private(scope, key)? {
       return Some(true);
     }
+    // A native wrapper's backing state cannot be copied as ordinary properties.
+    // Custom serializers below can still opt a supported native type in.
     match self.host_object_brand {
-      Some(symbol) => object.has(scope, symbol.into()),
-      _ => Some(false),
+      Some(symbol) => object
+        .has(scope, symbol.into())
+        .map(|custom| custom || object.is_api_wrapper()),
+      _ => Some(object.is_api_wrapper()),
     }
   }
 

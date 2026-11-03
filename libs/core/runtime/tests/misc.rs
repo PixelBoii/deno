@@ -2417,6 +2417,37 @@ fn test_embedder_shared_memory_agent_clusters() {
 }
 
 #[test]
+fn test_native_wrappers_require_serialization_support() {
+  struct NativeValue;
+  unsafe impl GarbageCollected for NativeValue {
+    fn trace(&self, _: &mut v8::cppgc::Visitor) {}
+    fn get_name(&self) -> &'static std::ffi::CStr { c"NativeValue" }
+  }
+  let mut runtime = JsRuntime::new(RuntimeOptions::default());
+  {
+    deno_core::scope!(scope, runtime);
+    let object = cppgc::make_cppgc_object(scope, NativeValue);
+    assert!(object.is_api_wrapper());
+    let global = scope.get_current_context().global(scope);
+    let key = v8::String::new(scope, "nativeObject").unwrap();
+    global.set(scope, key.into(), object.into());
+  }
+  runtime.execute_script("native-serialization", r#"
+    function check(value) { if (!value) throw Error('native serialization'); }
+    for (const value of [nativeObject, {nested: nativeObject}, [nativeObject]]) {
+      let rejected=false;
+      try { Deno.core.serialize(value); } catch { rejected=true; }
+      check(rejected);
+    }
+    const copied=Object.create(Object.getPrototypeOf(nativeObject));
+    check(Deno.core.deserialize(Deno.core.serialize(copied)) instanceof Object);
+    // Native objects with a serializer retain their existing serialization path.
+    nativeObject[Symbol.for('Deno.core.hostObject')]=()=>({value:23});
+    check(Deno.core.serialize(nativeObject) instanceof Uint8Array);
+  "#).unwrap();
+}
+
+#[test]
 fn test_private_unserializable_host_object() {
   let mut runtime = JsRuntime::new(RuntimeOptions::default());
   let object = runtime
