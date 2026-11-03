@@ -170,6 +170,40 @@ fn test_host_function_api() {
 }
 
 #[test]
+fn test_host_function_first_interface_argument() {
+  let mut runtime = JsRuntime::new(Default::default());
+  runtime.execute_script("interface-argument.js", r#"
+    const check=(value,message)=>{if(!value)throw Error(message)};
+    const create=Deno.core.createHostFunction,owner={},argument={},sentinel={};
+    let validations=0,dispatches=0;
+    const prefix="Failed to execute 'take' on 'Interface'";
+    const take=create(function typedDispatch(receiver,args) {
+      dispatches++;check(receiver===owner&&args[0]===argument,'actual receiver/argument');return 46;
+    },'take',1,false,receiver=>receiver===owner,false,{count:1,prefix},
+      function firstArgumentCheck(value){validations++;return value===argument},'Resource');
+    try{take.call({});throw sentinel}catch(error){check(error.message==='Illegal invocation','receiver precedes count/type')}
+    try{take.call(owner);throw sentinel}catch(error){check(error.message.includes('1 argument required'),'count precedes type')}
+    check(validations===0&&dispatches===0,'earlier errors do not enter argument validation');
+    try{take.call(owner,{});throw sentinel}catch(error){
+      check(error instanceof TypeError&&error.message===prefix+": parameter 1 is not of type 'Resource'.",'public interface conversion error');
+      check(!error.stack.includes('typedDispatch')&&!error.stack.includes('firstArgumentCheck'),'native error creation precedes JS dispatch');
+    }
+    check(dispatches===0,'invalid argument never enters implementation');
+    check(take.call(owner,argument)===46&&dispatches===1,'valid argument reaches implementation');
+    const throwing=create(()=>0,'throwing',1,false,undefined,false,{count:1,prefix},()=>{throw sentinel},'Resource');
+    try{throwing(0);throw Error('validator exception swallowed')}catch(error){check(error===sentinel,'argument validator exception identity')}
+    const asynchronous=create(()=>{throw sentinel},'asyncTake',1,false,undefined,true,{count:1,prefix},()=>false,'Resource');
+    const result=asynchronous({});check(result instanceof Promise,'async conversion returns a promise');
+    result.catch(error=>{
+      check(error instanceof TypeError&&error.message===prefix+": parameter 1 is not of type 'Resource'.",'async argument conversion');
+      globalThis.interfaceArgumentRejectionObserved=true;
+    });
+  "#).unwrap();
+  runtime.v8_isolate().perform_microtask_checkpoint();
+  runtime.execute_script("interface-argument-microtasks.js", "if(!interfaceArgumentRejectionObserved)throw Error('argument rejection was not delivered')").unwrap();
+}
+
+#[test]
 fn icu() {
   // If this test fails, update core/runtime/icudtl.dat from
   // rusty_v8/third_party/icu/common/icudtl.dat
