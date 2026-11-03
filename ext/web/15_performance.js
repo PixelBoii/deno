@@ -107,6 +107,19 @@ function updatePerformanceEntry(entry, duration) {
   entry[_duration] = duration;
 }
 
+// A reused initial Window receives a new document navigation, while keeping
+// its Performance object, clock, observers, and other timeline entries.
+function replacePerformanceEntry(previous, next) {
+  webidl.assertBranded(previous, PerformanceEntryPrototype);
+  webidl.assertBranded(next, PerformanceEntryPrototype);
+  if (previous[_entryType] !== next[_entryType]) {
+    throw new TypeError("Replacement performance entry must have the same type");
+  }
+  const index = ArrayPrototypeIndexOf(performanceEntries, previous);
+  if (index < 0) throw new TypeError("Performance entry is not in the timeline");
+  performanceEntries[index] = next;
+}
+
 function recordPerformanceEntry(entry, notify = true) {
   webidl.assertBranded(entry, PerformanceEntryPrototype);
   // Observers still receive entries when the resource timeline buffer is full.
@@ -951,6 +964,7 @@ return {
   configurePerformanceTimeline,
   createPerformanceEntry,
   updatePerformanceEntry,
+  replacePerformanceEntry,
   recordPerformanceEntry,
   queuePerformanceEntry,
 };
