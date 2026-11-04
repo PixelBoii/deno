@@ -503,6 +503,16 @@ function scheduleObserverCallback(observer) {
   const state = observerData(observer);
   if (state.scheduled) return;
   state.scheduled = true;
+  if (core.ops.op_create_performance_observer_callback) {
+    const prepare = () => {
+      state.scheduled = false;
+      const entries = state.buffer;
+      state.buffer = [];
+      if (entries.length > 0) return state.factory(sortedEntries(entries));
+    };
+    queueObserverTask(core.ops.op_create_performance_observer_callback(observer, prepare, state.callback, reportObserverError));
+    return;
+  }
   queueObserverTask(() => {
     state.scheduled = false;
     const entries = state.buffer;

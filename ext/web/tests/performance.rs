@@ -1,7 +1,7 @@
 // Copyright 2018-2026 the Deno authors. MIT license.
 
-#[test]
-fn performance_timeline_defaults_and_observer_order() {
+#[tokio::test(flavor = "current_thread")]
+async fn performance_timeline_defaults_and_observer_order() {
   deno_core::extension!(
     performance_test_setup,
     esm_entry_point = "ext:performance_test_setup/setup.js",
@@ -78,6 +78,21 @@ fn performance_timeline_defaults_and_observer_order() {
       Math.floor = () => { throw Error('author floor'); };
       try { timeline.setTimeOrigin({reset: true, precision}); p.now(); }
       finally { Math.floor = floor; }
+    }
+  "#).unwrap();
+  runtime.execute_script("file:///performance-default-delivery.js", r#"
+    globalThis.defaultDeliveries = [];
+    const defaultObserver = new timeline.PerformanceObserver(function(list, owner) {
+      defaultDeliveries.push({receiver: this === owner, entries: list.getEntries().map(entry => entry.name)});
+      defaultObserver.disconnect();
+    });
+    defaultObserver.observe({type:'mark'});
+    timeline.performance.mark('default-cli-delivery');
+  "#).unwrap();
+  runtime.run_event_loop(Default::default()).await.unwrap();
+  runtime.execute_script("file:///performance-default-delivery-result.js", r#"
+    if (defaultDeliveries.length !== 1 || !defaultDeliveries[0].receiver || !defaultDeliveries[0].entries.includes('default-cli-delivery')) {
+      throw new Error('default observer delivery');
     }
   "#).unwrap();
 }
