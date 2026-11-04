@@ -30,3 +30,7 @@ hyper-util.workspace = true
 once_cell.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+deno_web.workspace = true
+deno_webidl.workspace = true

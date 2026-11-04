@@ -9,6 +9,8 @@ const {
   internalRidSymbol,
 } = core;
 import {
+  op_ws_initialize,
+  op_ws_state,
   op_ws_check_permission_and_cancel_handle,
   op_ws_close,
   op_ws_create,
@@ -26,7 +28,6 @@ const {
   ArrayBufferIsView,
   ArrayIsArray,
   ArrayPrototypeJoin,
-  ArrayPrototypeMap,
   ArrayPrototypePush,
   ArrayPrototypeShift,
   ArrayPrototypeSome,
@@ -34,16 +35,20 @@ const {
   decodeURIComponent,
   Error,
   ErrorPrototypeToString,
+  ObjectCreate,
   ObjectDefineProperties,
+  ObjectDefineProperty,
+  ObjectGetOwnPropertyDescriptor,
   ObjectPrototypeIsPrototypeOf,
   PromisePrototypeCatch,
   PromisePrototypeThen,
+  PromiseReject,
+  ReflectApply,
   RegExpPrototypeExec,
   SafeSet,
   SetPrototypeGetSize,
   String,
   StringPrototypeEndsWith,
-  StringPrototypeToLowerCase,
   Symbol,
   SymbolFor,
   SymbolIterator,
@@ -52,6 +57,33 @@ const {
 } = primordials;
 
 const { URL } = core.loadExtScript("ext:deno_web/00_url.js");
+const urlProperties = ObjectCreate(null);
+for (const name of ["href", "protocol", "hash", "username", "password"]) {
+  urlProperties[name] = ObjectGetOwnPropertyDescriptor(URL.prototype, name);
+}
+const readURL = (url, name) => ReflectApply(urlProperties[name].get, url, []);
+const writeURL = (url, name, value) => ReflectApply(urlProperties[name].set, url, [value]);
+
+// Handshake metadata is a private byte-string list, never a public Headers
+// object containing browser-managed credentials. Native op conversion reads its
+// own array indices directly and does not invoke JavaScript iterators.
+function handshakeHeaderList(previous, prepared, authorization) {
+  if (prepared === undefined) return previous;
+  const list = [];
+  const append = (name, value) => {
+    name = byteLowerCase(name);
+    const pair = [name, value];
+    for (let i = 0; i < list.length; i++) {
+      if (list[i][0] === name) { list[i] = pair; return; }
+    }
+    ObjectDefineProperty(list, list.length, { value: pair, writable: true, configurable: true, enumerable: true });
+  };
+  if (previous !== null) for (let i = 0; i < previous.length; i++) append(previous[i][0], previous[i][1]);
+  if (authorization !== null) append("authorization", "Basic " + authorization);
+  for (let i = 0; i < prepared.length; i++) append(prepared[i][0], prepared[i][1]);
+  return list;
+}
+
 const webidl = core.loadExtScript("ext:deno_webidl/00_webidl.js");
 const { createFilteredInspectProxy } = core.loadExtScript(
   "ext:deno_web/01_console.js",
@@ -180,7 +212,7 @@ function getInspectorNetwork() {
 
 function emitWebSocketClosed(ws) {
   const ins = getInspectorNetwork();
-  const requestId = ws[_inspectorRequestId];
+  const requestId = socketState(ws).inspectorRequestId;
   if (ins === null || requestId === undefined) return;
   try {
     ins.webSocketClosed({
@@ -190,7 +222,7 @@ function emitWebSocketClosed(ws) {
   } catch {
     // never let inspector instrumentation break a real WebSocket
   }
-  ws[_inspectorRequestId] = undefined;
+  socketState(ws).inspectorRequestId = undefined;
 }
 
 // Opcodes per RFC 6455 / CDP `WebSocketFrame.opcode`:
@@ -200,10 +232,10 @@ function emitWebSocketClosed(ws) {
 // frames coming in.
 function emitWebSocketFrame(ws, eventName, opcode, payloadData) {
   const ins = getInspectorNetwork();
-  const requestId = ws[_inspectorRequestId];
+  const requestId = socketState(ws).inspectorRequestId;
   if (ins === null || requestId === undefined) return;
   const sent = eventName === "frameSent";
-  const mask = ws[_role] === SERVER ? !sent : sent;
+  const mask = socketState(ws).role === SERVER ? !sent : sent;
   try {
     const params = {
       requestId,
@@ -226,7 +258,7 @@ function installServerInspector(ws, url) {
   const ins = getInspectorNetwork();
   if (ins === null) return;
   const requestId = ins.nextRequestId();
-  ws[_inspectorRequestId] = requestId;
+  socketState(ws).inspectorRequestId = requestId;
   try {
     ins.webSocketCreated({ requestId, url });
   } catch {
@@ -236,7 +268,7 @@ function installServerInspector(ws, url) {
 
 function emitWebSocketFrameError(ws, errorMessage) {
   const ins = getInspectorNetwork();
-  const requestId = ws[_inspectorRequestId];
+  const requestId = socketState(ws).inspectorRequestId;
   if (ins === null || requestId === undefined) return;
   try {
     ins.webSocketFrameError({
@@ -249,21 +281,60 @@ function emitWebSocketFrameError(ws, errorMessage) {
   }
 }
 
+// Embedder policy stays private to the extension module. Browser embedders can
+// supply their real origin, cookies and connect policy without exposing Deno's
+// nonstandard constructor options to page scripts.
+const socketState = op_ws_state;
+let handshakeHooks = null;
+function setWebSocketHandshakeHooks(hooks) {
+  handshakeHooks = hooks;
+}
+
+function markSocketClosed(socket) {
+  socketState(socket).readyState = CLOSED;
+  handshakeHooks?.closed?.(socket);
+}
+
+function dispatchWebSocketEvent(socket, event) {
+  setIsTrusted(event, true);
+  dispatch(socket, event);
+}
+
+function socketError(error, message = ErrorPrototypeToString(error)) {
+  return handshakeHooks === null
+    ? new ErrorEvent("error", { error, message })
+    : new Event("error");
+}
+
+function failedCloseEvent() {
+  return new CloseEvent("close", handshakeHooks === null ? {} : { code: 1006 });
+}
+
+// User-agent teardown releases the actual transport/cancellation resources.
+function disposeWebSocket(socket) {
+  if (socketState(socket).cancelHandle !== undefined) core.tryClose(socketState(socket).cancelHandle);
+  if (socketState(socket).rid !== undefined) core.tryClose(socketState(socket).rid);
+  socketState(socket).cancelHandle = undefined;
+  socketState(socket).rid = undefined;
+  markSocketClosed(socket);
+}
+
 class WebSocket extends EventTarget {
   constructor(url, initOrProtocols) {
     super();
+    op_ws_initialize(this, ObjectCreate(null));
     this[webidl.brand] = webidl.brand;
-    this[_rid] = undefined;
-    this[_role] = undefined;
-    this[_readyState] = CONNECTING;
-    this[_extensions] = "";
-    this[_protocol] = "";
-    this[_url] = "";
-    this[_binaryType] = "blob";
-    this[_idleTimeoutDuration] = 0;
-    this[_idleTimeoutTimeout] = undefined;
-    this[_sendQueue] = [];
-    this[_cancelHandle] = undefined;
+    socketState(this).rid = undefined;
+    socketState(this).role = undefined;
+    socketState(this).readyState = CONNECTING;
+    socketState(this).extensions = "";
+    socketState(this).protocol = "";
+    socketState(this).url = "";
+    socketState(this).binaryType = "blob";
+    socketState(this).idleTimeoutDuration = 0;
+    socketState(this).idleTimeoutTimeout = undefined;
+    socketState(this).sendQueue = [];
+    socketState(this).cancelHandle = undefined;
 
     const prefix = "Failed to construct 'WebSocket'";
     webidl.requiredArguments(arguments.length, 1, prefix);
@@ -283,20 +354,20 @@ class WebSocket extends EventTarget {
       throw new DOMException(e.message, "SyntaxError");
     }
 
-    if (wsURL.protocol === "http:") {
-      wsURL.protocol = "ws:";
-    } else if (wsURL.protocol === "https:") {
-      wsURL.protocol = "wss:";
+    if (readURL(wsURL, "protocol") === "http:") {
+      writeURL(wsURL, "protocol", "ws:");
+    } else if (readURL(wsURL, "protocol") === "https:") {
+      writeURL(wsURL, "protocol", "wss:");
     }
 
-    if (wsURL.protocol !== "ws:" && wsURL.protocol !== "wss:") {
+    if (readURL(wsURL, "protocol") !== "ws:" && readURL(wsURL, "protocol") !== "wss:") {
       throw new DOMException(
-        `Only ws & wss schemes are allowed in a WebSocket URL: received ${wsURL.protocol}`,
+        `Only ws & wss schemes are allowed in a WebSocket URL: received ${readURL(wsURL, "protocol")}`,
         "SyntaxError",
       );
     }
 
-    if (wsURL.hash !== "" || StringPrototypeEndsWith(wsURL.href, "#")) {
+    if (readURL(wsURL, "hash") !== "" || StringPrototypeEndsWith(readURL(wsURL, "href"), "#")) {
       throw new DOMException(
         "Fragments are not allowed in a WebSocket URL",
         "SyntaxError",
@@ -307,20 +378,21 @@ class WebSocket extends EventTarget {
     // `Authorization: Basic` header during the handshake and then stripped
     // from the URL exposed via `url`. This matches browser behavior.
     let urlCredentials = null;
-    if (wsURL.username !== "" || wsURL.password !== "") {
+    if (readURL(wsURL, "username") !== "" || readURL(wsURL, "password") !== "") {
       urlCredentials = forgivingBase64Encode(
         core.encode(
-          `${decodeURIComponent(wsURL.username)}:${
-            decodeURIComponent(wsURL.password)
+          `${decodeURIComponent(readURL(wsURL, "username"))}:${
+            decodeURIComponent(readURL(wsURL, "password"))
           }`,
         ),
       );
-      wsURL.username = "";
-      wsURL.password = "";
+      writeURL(wsURL, "username", "");
+      writeURL(wsURL, "password", "");
     }
 
-    this[_url] = wsURL.href;
-    this[_role] = CLIENT;
+    const requestURL = readURL(wsURL, "href");
+    socketState(this).url = requestURL;
+    socketState(this).role = CLIENT;
 
     let protocols;
     let headers = null;
@@ -380,7 +452,7 @@ class WebSocket extends EventTarget {
 
     // Apply URL-derived Basic credentials. An explicit `Authorization` header
     // in `init.headers` takes precedence over the URL userinfo.
-    if (urlCredentials !== null) {
+    if (urlCredentials !== null && handshakeHooks === null) {
       if (headers === null) {
         headers = headersFromHeaderList([], "request");
       }
@@ -392,9 +464,7 @@ class WebSocket extends EventTarget {
     if (
       protocols.length !==
         SetPrototypeGetSize(
-          new SafeSet(
-            ArrayPrototypeMap(protocols, (p) => StringPrototypeToLowerCase(p)),
-          ),
+          new SafeSet(protocols),
         )
     ) {
       throw new DOMException(
@@ -416,13 +486,19 @@ class WebSocket extends EventTarget {
       );
     }
 
-    const cancelRid = op_ws_check_permission_and_cancel_handle(
+    const preparation = handshakeHooks?.prepare(requestURL);
+    const handshakeHeaders = handshakeHeaderList(
+      headers ? headerListFromHeaders(headers) : null,
+      preparation?.headers,
+      handshakeHooks === null ? null : urlCredentials,
+    );
+    const cancelRid = preparation?.blocked ? undefined : op_ws_check_permission_and_cancel_handle(
       "WebSocket.abort()",
-      this[_url],
+      socketState(this).url,
       true,
     );
 
-    this[_cancelHandle] = cancelRid;
+    socketState(this).cancelHandle = cancelRid;
 
     // Inspector: emit `Network.webSocketCreated` before initiating the
     // handshake. The op call itself reaches deep into Rust async work, so
@@ -431,11 +507,11 @@ class WebSocket extends EventTarget {
     const inspectorNetwork = getInspectorNetwork();
     if (inspectorNetwork !== null) {
       const requestId = inspectorNetwork.nextRequestId();
-      this[_inspectorRequestId] = requestId;
+      socketState(this).inspectorRequestId = requestId;
       try {
         inspectorNetwork.webSocketCreated({
           requestId,
-          url: this[_url],
+          url: socketState(this).url,
           // initiator is filled in by the inspector op using V8's stack.
         });
       } catch {
@@ -483,25 +559,30 @@ class WebSocket extends EventTarget {
     }
 
     PromisePrototypeThen(
-      op_ws_create(
+      preparation?.blocked ? PromiseReject(new DOMException("WebSocket blocked by connect policy", "NetworkError")) : op_ws_create(
         "new WebSocket()",
-        wsURL.href,
+        requestURL,
         ArrayPrototypeJoin(protocols, ", "),
         cancelRid,
-        headers ? headerListFromHeaders(headers) : null,
+        handshakeHeaders,
         caCerts,
         unsafelyIgnoreCertificateErrors,
         clientRid,
       ),
       (create) => {
-        this[_rid] = create.rid;
-        this[_extensions] = create.extensions;
-        this[_protocol] = create.protocol;
+        if (socketState(this).readyState === CLOSED) {
+          core.tryClose(create.rid);
+          return;
+        }
+        handshakeHooks?.response(requestURL, create.headers);
+        socketState(this).rid = create.rid;
+        socketState(this).extensions = create.extensions;
+        socketState(this).protocol = create.protocol;
 
         // Inspector: emit `Network.webSocketHandshakeResponseReceived` with
         // the real upgrade response (status, statusText, headers) returned
         // by the Rust op.
-        const reqId = this[_inspectorRequestId];
+        const reqId = socketState(this).inspectorRequestId;
         if (reqId !== undefined) {
           const ins = getInspectorNetwork();
           if (ins !== null) {
@@ -532,142 +613,127 @@ class WebSocket extends EventTarget {
           }
         }
 
-        if (this[_readyState] === CLOSING) {
+        if (socketState(this).readyState === CLOSING) {
           PromisePrototypeThen(
-            op_ws_close(this[_rid]),
+            op_ws_close(socketState(this).rid),
             () => {
-              this[_readyState] = CLOSED;
+              markSocketClosed(this);
 
-              const errEvent = new ErrorEvent("error");
-              this.dispatchEvent(errEvent);
+              const errEvent = socketError(new Error("WebSocket closed before opening"));
+              dispatchWebSocketEvent(this, errEvent);
 
               emitWebSocketClosed(this);
-              const event = new CloseEvent("close");
-              this.dispatchEvent(event);
-              core.tryClose(this[_rid]);
+              const event = failedCloseEvent();
+              dispatchWebSocketEvent(this, event);
+              core.tryClose(socketState(this).rid);
             },
           );
         } else {
-          this[_readyState] = OPEN;
+          socketState(this).readyState = OPEN;
           const event = new Event("open");
-          this.dispatchEvent(event);
+          dispatchWebSocketEvent(this, event);
 
-          this[_eventLoop]();
+          ReflectApply(eventLoopImpl, this, []);
         }
       },
       (err) => {
-        this[_readyState] = CLOSED;
+        if (socketState(this).readyState === CLOSED) return;
+        markSocketClosed(this);
 
-        const errorEv = new ErrorEvent(
-          "error",
-          { error: err, message: ErrorPrototypeToString(err) },
-        );
-        this.dispatchEvent(errorEv);
+        const errorEv = socketError(err);
+        dispatchWebSocketEvent(this, errorEv);
 
-        if (this[_cancelHandle]) {
-          core.tryClose(this[_cancelHandle]);
+        if (socketState(this).cancelHandle) {
+          core.tryClose(socketState(this).cancelHandle);
 
-          this[_cancelHandle] = undefined;
+          socketState(this).cancelHandle = undefined;
         }
 
+        // A policy refusal happens before a transport is opened. Chromium
+        // reports its error without a transport close event in this case.
+        if (preparation?.blocked) return;
+
         emitWebSocketClosed(this);
-        const closeEv = new CloseEvent("close");
-        this.dispatchEvent(closeEv);
+        const closeEv = failedCloseEvent();
+        dispatchWebSocketEvent(this, closeEv);
       },
     );
   }
 
   get readyState() {
-    webidl.assertBranded(this, WebSocketPrototype);
-    return this[_readyState];
-  }
-
-  get CONNECTING() {
-    webidl.assertBranded(this, WebSocketPrototype);
-    return CONNECTING;
-  }
-  get OPEN() {
-    webidl.assertBranded(this, WebSocketPrototype);
-    return OPEN;
-  }
-  get CLOSING() {
-    webidl.assertBranded(this, WebSocketPrototype);
-    return CLOSING;
-  }
-  get CLOSED() {
-    webidl.assertBranded(this, WebSocketPrototype);
-    return CLOSED;
+    socketState(this);
+    return socketState(this).readyState;
   }
 
   get extensions() {
-    webidl.assertBranded(this, WebSocketPrototype);
-    return this[_extensions];
+    socketState(this);
+    return socketState(this).extensions;
   }
 
   get protocol() {
-    webidl.assertBranded(this, WebSocketPrototype);
-    return this[_protocol];
+    socketState(this);
+    return socketState(this).protocol;
   }
 
   get url() {
-    webidl.assertBranded(this, WebSocketPrototype);
-    return this[_url];
+    socketState(this);
+    return socketState(this).url;
   }
 
   get binaryType() {
-    webidl.assertBranded(this, WebSocketPrototype);
-    return this[_binaryType];
+    socketState(this);
+    return socketState(this).binaryType;
   }
   set binaryType(value) {
-    webidl.assertBranded(this, WebSocketPrototype);
+    socketState(this);
     value = webidl.converters.DOMString(
       value,
       "Failed to set 'binaryType' on 'WebSocket'",
     );
     if (value === "blob" || value === "arraybuffer") {
-      this[_binaryType] = value;
+      socketState(this).binaryType = value;
     }
   }
 
   get bufferedAmount() {
-    webidl.assertBranded(this, WebSocketPrototype);
-    if (this[_readyState] === OPEN) {
-      return op_ws_get_buffered_amount(this[_rid]);
+    socketState(this);
+    if (socketState(this).readyState === OPEN) {
+      return op_ws_get_buffered_amount(socketState(this).rid);
     } else {
       return 0;
     }
   }
 
   send(data) {
-    webidl.assertBranded(this, WebSocketPrototype);
+    socketState(this);
     const prefix = "Failed to execute 'send' on 'WebSocket'";
 
     webidl.requiredArguments(arguments.length, 1, prefix);
     data = webidl.converters.WebSocketSend(data, prefix, "Argument 1");
 
-    if (this[_readyState] === CONNECTING) {
+    if (socketState(this).readyState === CONNECTING) {
       throw new DOMException("'readyState' not OPEN", "InvalidStateError");
     }
 
-    if (this[_readyState] !== OPEN) {
+    if (socketState(this).readyState !== OPEN) {
       return;
     }
 
-    if (this[_sendQueue].length === 0) {
+    if (socketState(this).sendQueue.length === 0) {
       // Fast path if the send queue is empty, for example when only synchronous
       // data is being sent.
       if (ArrayBufferIsView(data)) {
-        op_ws_send_binary(this[_rid], data);
+        op_ws_send_binary(socketState(this).rid, data);
         emitWebSocketFrame(this, "frameSent", 2, data);
       } else if (isArrayBuffer(data)) {
-        op_ws_send_binary_ab(this[_rid], data);
+        op_ws_send_binary_ab(socketState(this).rid, data);
         emitWebSocketFrame(this, "frameSent", 2, data);
       } else if (ObjectPrototypeIsPrototypeOf(BlobPrototype, data)) {
-        this[_queueSend](data);
+        ReflectApply(queueSendImpl, this, [data]);
       } else {
         const string = String(data);
         op_ws_send_text(
-          this[_rid],
+          socketState(this).rid,
           string,
         );
         emitWebSocketFrame(this, "frameSent", 1, string);
@@ -675,12 +741,12 @@ class WebSocket extends EventTarget {
     } else {
       // Slower path if the send queue is not empty, for example when sending
       // asynchronous data like a Blob.
-      this[_queueSend](data);
+      ReflectApply(queueSendImpl, this, [data]);
     }
   }
 
   close(code = undefined, reason = undefined) {
-    webidl.assertBranded(this, WebSocketPrototype);
+    socketState(this);
     const prefix = "Failed to execute 'close' on 'WebSocket'";
 
     if (code !== undefined) {
@@ -693,7 +759,7 @@ class WebSocket extends EventTarget {
       reason = webidl.converters.USVString(reason, prefix, "Argument 2");
     }
 
-    if (this[_role] === CLIENT) {
+    if (socketState(this).role === CLIENT) {
       if (
         code !== undefined &&
         !(code === 1000 || (3000 <= code && code < 5000))
@@ -715,56 +781,54 @@ class WebSocket extends EventTarget {
       );
     }
 
-    if (this[_cancelHandle]) {
+    if (socketState(this).cancelHandle) {
       // Cancel ongoing handshake.
-      core.tryClose(this[_cancelHandle]);
+      core.tryClose(socketState(this).cancelHandle);
 
-      this[_cancelHandle] = undefined;
+      socketState(this).cancelHandle = undefined;
     }
 
-    if (this[_readyState] === CONNECTING) {
-      this[_readyState] = CLOSING;
-    } else if (this[_readyState] === OPEN) {
-      this[_readyState] = CLOSING;
+    if (socketState(this).readyState === CONNECTING) {
+      socketState(this).readyState = CLOSING;
+    } else if (socketState(this).readyState === OPEN) {
+      socketState(this).readyState = CLOSING;
 
       PromisePrototypeCatch(
         op_ws_close(
-          this[_rid],
+          socketState(this).rid,
           code,
           reason,
         ),
         (err) => {
-          this[_readyState] = CLOSED;
+          markSocketClosed(this);
 
-          const errorEv = new ErrorEvent("error", {
-            error: err,
-            message: ErrorPrototypeToString(err),
-          });
-          this.dispatchEvent(errorEv);
+          const errorEv = socketError(err);
+          dispatchWebSocketEvent(this, errorEv);
 
           emitWebSocketClosed(this);
-          const closeEv = new CloseEvent("close");
-          this.dispatchEvent(closeEv);
-          core.tryClose(this[_rid]);
+          const closeEv = failedCloseEvent();
+          dispatchWebSocketEvent(this, closeEv);
+          core.tryClose(socketState(this).rid);
         },
       );
     }
   }
 
   async [_eventLoop]() {
-    const rid = this[_rid];
-    while (this[_readyState] !== CLOSED) {
+    const rid = socketState(this).rid;
+    while (socketState(this).readyState !== CLOSED) {
       const kind = await op_ws_next_event(rid);
+      if (socketState(this).readyState === CLOSED) break;
       /* close the connection if read was cancelled, and we didn't get a close frame */
       if (
-        (this[_readyState] == CLOSING) &&
-        kind <= 3 && this[_role] !== CLIENT
+        (socketState(this).readyState == CLOSING) &&
+        kind <= 3 && socketState(this).role !== CLIENT
       ) {
-        this[_readyState] = CLOSED;
+        markSocketClosed(this);
 
         emitWebSocketClosed(this);
         const event = new CloseEvent("close");
-        this.dispatchEvent(event);
+        dispatchWebSocketEvent(this, event);
         core.tryClose(rid);
         break;
       }
@@ -777,11 +841,11 @@ class WebSocket extends EventTarget {
             break;
           }
 
-          this[_serverHandleIdleTimeout]();
+          ReflectApply(idleTimeoutImpl, this, []);
           emitWebSocketFrame(this, "frameReceived", 1, data);
           const event = new MessageEvent("message", {
             data,
-            origin: this[_url],
+            origin: socketState(this).url,
           });
           setIsTrusted(event, true);
           dispatch(this, event);
@@ -794,7 +858,7 @@ class WebSocket extends EventTarget {
             break;
           }
 
-          this[_serverHandleIdleTimeout]();
+          ReflectApply(idleTimeoutImpl, this, []);
           // deno-lint-ignore deno-internal/prefer-primordials
           const buffer = d.buffer;
           emitWebSocketFrame(this, "frameReceived", 2, buffer);
@@ -807,7 +871,7 @@ class WebSocket extends EventTarget {
 
           const event = new MessageEvent("message", {
             data,
-            origin: this[_url],
+            origin: socketState(this).url,
           });
           setIsTrusted(event, true);
           dispatch(this, event);
@@ -815,25 +879,22 @@ class WebSocket extends EventTarget {
         }
         case 2: {
           /* pong */
-          this[_serverHandleIdleTimeout]();
+          ReflectApply(idleTimeoutImpl, this, []);
           break;
         }
         case 3: {
           /* error */
-          this[_readyState] = CLOSED;
+          markSocketClosed(this);
 
           const message = op_ws_get_error(rid);
           emitWebSocketFrameError(this, message);
           const error = new Error(message);
-          const errorEv = new ErrorEvent("error", {
-            error,
-            message,
-          });
-          this.dispatchEvent(errorEv);
+          const errorEv = socketError(error, message);
+          dispatchWebSocketEvent(this, errorEv);
 
           emitWebSocketClosed(this);
-          const closeEv = new CloseEvent("close");
-          this.dispatchEvent(closeEv);
+          const closeEv = failedCloseEvent();
+          dispatchWebSocketEvent(this, closeEv);
           core.tryClose(rid);
           break;
         }
@@ -841,10 +902,10 @@ class WebSocket extends EventTarget {
           /* close */
           const code = kind;
           const reason = code == 1005 ? "" : op_ws_get_error(rid);
-          const prevState = this[_readyState];
-          this[_readyState] = CLOSED;
-          if (this[_idleTimeoutTimeout]) {
-            core.cancelTimer(this[_idleTimeoutTimeout]);
+          const prevState = socketState(this).readyState;
+          markSocketClosed(this);
+          if (socketState(this).idleTimeoutTimeout) {
+            core.cancelTimer(socketState(this).idleTimeoutTimeout);
           }
 
           if (prevState === OPEN) {
@@ -865,7 +926,7 @@ class WebSocket extends EventTarget {
             code: code,
             reason,
           });
-          this.dispatchEvent(event);
+          dispatchWebSocketEvent(this, event);
           core.tryClose(rid);
           break;
         }
@@ -874,7 +935,7 @@ class WebSocket extends EventTarget {
   }
 
   async [_queueSend](data) {
-    const queue = this[_sendQueue];
+    const queue = socketState(this).sendQueue;
 
     ArrayPrototypePush(queue, data);
 
@@ -887,20 +948,20 @@ class WebSocket extends EventTarget {
     while (queue.length > 0) {
       const data = queue[0];
       if (ArrayBufferIsView(data)) {
-        op_ws_send_binary(this[_rid], data);
+        op_ws_send_binary(socketState(this).rid, data);
         emitWebSocketFrame(this, "frameSent", 2, data);
       } else if (isArrayBuffer(data)) {
-        op_ws_send_binary_ab(this[_rid], data);
+        op_ws_send_binary_ab(socketState(this).rid, data);
         emitWebSocketFrame(this, "frameSent", 2, data);
       } else if (ObjectPrototypeIsPrototypeOf(BlobPrototype, data)) {
         // deno-lint-ignore deno-internal/prefer-primordials
         const ab = await data.slice().arrayBuffer();
-        op_ws_send_binary_ab(this[_rid], ab);
+        op_ws_send_binary_ab(socketState(this).rid, ab);
         emitWebSocketFrame(this, "frameSent", 2, ab);
       } else {
         const string = String(data);
         op_ws_send_text(
-          this[_rid],
+          socketState(this).rid,
           string,
         );
         emitWebSocketFrame(this, "frameSent", 1, string);
@@ -910,53 +971,53 @@ class WebSocket extends EventTarget {
   }
 
   [_serverHandleIdleTimeout]() {
-    if (this[_idleTimeoutDuration]) {
-      if (this[_idleTimeoutTimeout]) {
-        core.cancelTimer(this[_idleTimeoutTimeout]);
+    if (socketState(this).idleTimeoutDuration) {
+      if (socketState(this).idleTimeoutTimeout) {
+        core.cancelTimer(socketState(this).idleTimeoutTimeout);
       }
-      this[_idleTimeoutTimeout] = core.createSystemTimer(
+      socketState(this).idleTimeoutTimeout = core.createSystemTimer(
         async () => {
-          if (this[_readyState] === OPEN) {
-            await PromisePrototypeCatch(op_ws_send_ping(this[_rid]), () => {});
-            this[_idleTimeoutTimeout] = core.createSystemTimer(
+          if (socketState(this).readyState === OPEN) {
+            await PromisePrototypeCatch(op_ws_send_ping(socketState(this).rid), () => {});
+            socketState(this).idleTimeoutTimeout = core.createSystemTimer(
               async () => {
-                if (this[_readyState] === OPEN) {
-                  this[_readyState] = CLOSING;
+                if (socketState(this).readyState === OPEN) {
+                  socketState(this).readyState = CLOSING;
                   const reason = "No response from ping frame.";
                   await PromisePrototypeCatch(
-                    op_ws_close(this[_rid], 1001, reason),
+                    op_ws_close(socketState(this).rid, 1001, reason),
                     () => {},
                   );
-                  this[_readyState] = CLOSED;
+                  markSocketClosed(this);
 
                   const errEvent = new ErrorEvent("error", {
                     message: reason,
                   });
-                  this.dispatchEvent(errEvent);
+                  dispatchWebSocketEvent(this, errEvent);
 
                   const event = new CloseEvent("close", {
                     wasClean: false,
                     code: 1001,
                     reason,
                   });
-                  this.dispatchEvent(event);
-                  core.tryClose(this[_rid]);
+                  dispatchWebSocketEvent(this, event);
+                  core.tryClose(socketState(this).rid);
                 } else {
-                  if (this[_idleTimeoutTimeout]) {
-                    core.cancelTimer(this[_idleTimeoutTimeout]);
+                  if (socketState(this).idleTimeoutTimeout) {
+                    core.cancelTimer(socketState(this).idleTimeoutTimeout);
                   }
                 }
               },
-              (this[_idleTimeoutDuration] / 2) * 1000,
+              (socketState(this).idleTimeoutDuration / 2) * 1000,
               true,
             );
           } else {
-            if (this[_idleTimeoutTimeout]) {
-              core.cancelTimer(this[_idleTimeoutTimeout]);
+            if (socketState(this).idleTimeoutTimeout) {
+              core.cancelTimer(socketState(this).idleTimeoutTimeout);
             }
           }
         },
-        (this[_idleTimeoutDuration] / 2) * 1000,
+        (socketState(this).idleTimeoutDuration / 2) * 1000,
         true,
       );
     }
@@ -989,18 +1050,22 @@ ObjectDefineProperties(WebSocket, {
   CONNECTING: {
     __proto__: null,
     value: 0,
+    enumerable: true,
   },
   OPEN: {
     __proto__: null,
     value: 1,
+    enumerable: true,
   },
   CLOSING: {
     __proto__: null,
     value: 2,
+    enumerable: true,
   },
   CLOSED: {
     __proto__: null,
     value: 3,
+    enumerable: true,
   },
 });
 
@@ -1011,23 +1076,60 @@ defineEventHandler(WebSocket.prototype, "open");
 
 webidl.configureInterface(WebSocket);
 const WebSocketPrototype = WebSocket.prototype;
+const queueSendImpl = WebSocketPrototype[_queueSend];
+const eventLoopImpl = WebSocketPrototype[_eventLoop];
+const idleTimeoutImpl = WebSocketPrototype[_serverHandleIdleTimeout];
+for (const [symbol, field] of [
+  [_rid, "rid"],
+  [_role, "role"],
+  [_readyState, "readyState"],
+  [_extensions, "extensions"],
+  [_protocol, "protocol"],
+  [_url, "url"],
+  [_binaryType, "binaryType"],
+  [_sendQueue, "sendQueue"],
+  [_cancelHandle, "cancelHandle"],
+  [_idleTimeoutDuration, "idleTimeoutDuration"],
+  [_idleTimeoutTimeout, "idleTimeoutTimeout"],
+  [_inspectorRequestId, "inspectorRequestId"],
+]) {
+  const serverState = (socket) => {
+    const state = socketState(socket);
+    if (state.role !== SERVER) throw new TypeError("Server WebSocket state is not available on a client");
+    return state;
+  };
+  ObjectDefineProperties(WebSocketPrototype, {
+    [symbol]: {
+      get() { return serverState(this)[field]; },
+      set(value) { serverState(this)[field] = value; },
+      configurable: true,
+    },
+  });
+}
+
+for (const [name, value] of [["CONNECTING", CONNECTING], ["OPEN", OPEN], ["CLOSING", CLOSING], ["CLOSED", CLOSED]]) {
+  ObjectDefineProperties(WebSocketPrototype, {
+    [name]: {value, enumerable: true},
+  });
+}
 
 function createWebSocketBranded() {
   const socket = webidl.createBranded(WebSocket);
-  socket[_rid] = undefined;
-  socket[_role] = undefined;
-  socket[_readyState] = CONNECTING;
-  socket[_extensions] = "";
-  socket[_protocol] = "";
-  socket[_url] = "";
+  op_ws_initialize(socket, ObjectCreate(null));
+  socketState(socket).rid = undefined;
+  socketState(socket).role = SERVER;
+  socketState(socket).readyState = CONNECTING;
+  socketState(socket).extensions = "";
+  socketState(socket).protocol = "";
+  socketState(socket).url = "";
   // We use ArrayBuffer for server websockets for backwards compatibility
   // and performance reasons.
   //
   // https://github.com/denoland/deno/issues/15340#issuecomment-1872353134
-  socket[_binaryType] = "arraybuffer";
-  socket[_idleTimeoutDuration] = 0;
-  socket[_idleTimeoutTimeout] = undefined;
-  socket[_sendQueue] = [];
+  socketState(socket).binaryType = "arraybuffer";
+  socketState(socket).idleTimeoutDuration = 0;
+  socketState(socket).idleTimeoutTimeout = undefined;
+  socketState(socket).sendQueue = [];
   return socket;
 }
 
@@ -1042,8 +1144,10 @@ export {
   _serverHandleIdleTimeout,
   CLIENT,
   createWebSocketBranded,
+  disposeWebSocket,
   emitWebSocketClosed,
   installServerInspector,
   SERVER,
+  setWebSocketHandshakeHooks,
   WebSocket,
 };

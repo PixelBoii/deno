@@ -21,6 +21,7 @@ use deno_core::convert::ByteString;
 use deno_core::convert::Uint8Array;
 use deno_core::futures::TryFutureExt;
 use deno_core::op2;
+use deno_core::v8;
 use deno_core::unsync::spawn;
 use deno_core::url;
 use deno_error::JsErrorBox;
@@ -64,6 +65,40 @@ use tokio::io::WriteHalf;
 use crate::stream::WebSocketStream;
 
 mod stream;
+
+fn websocket_state_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
+  let name = v8::String::new(scope, "deno::WebSocket::state").unwrap();
+  v8::Private::for_api(scope, Some(name))
+}
+
+#[op2(fast)]
+pub fn op_ws_initialize(
+  scope: &mut v8::PinScope,
+  object: v8::Local<v8::Object>,
+  state: v8::Local<v8::Object>,
+) {
+  let key = websocket_state_key(scope);
+  object.set_private(scope, key, state.into());
+  deno_core::mark_as_unserializable_host_object(scope, object);
+}
+
+#[op2]
+pub fn op_ws_state<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+  value: v8::Local<v8::Value>,
+) -> Result<v8::Local<'s, v8::Object>, JsErrorBox> {
+  if !value.is_proxy()
+    && let Ok(object) = v8::Local::<v8::Object>::try_from(value)
+  {
+    let key = websocket_state_key(scope);
+    if let Some(state) = object.get_private(scope, key)
+      && let Ok(state) = v8::Local::<v8::Object>::try_from(state)
+    {
+      return Ok(state);
+    }
+  }
+  Err(JsErrorBox::type_error("Illegal invocation"))
+}
 
 static USE_WRITEV: Lazy<bool> = Lazy::new(|| {
   let enable = std::env::var("DENO_USE_WRITEV").ok();
@@ -1079,6 +1114,8 @@ deno_core::extension!(
   deno_websocket,
   deps = [deno_web, deno_webidl],
   ops = [
+    op_ws_initialize,
+    op_ws_state,
     op_ws_check_permission_and_cancel_handle,
     op_ws_create,
     op_ws_close,
@@ -1114,6 +1151,42 @@ where
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[tokio::test(flavor = "current_thread")]
+  async fn http_upgrade_bridge_initializes_public_socket_state() {
+    deno_core::extension!(ws_bridge_test,
+      esm_entry_point = "ext:ws_bridge_test/test.js",
+      esm = ["ext:ws_bridge_test/test.js" = { source = r#"
+        import {WebSocket, createWebSocketBranded, SERVER, _role, _protocol,
+          _readyState, _idleTimeoutDuration, _idleTimeoutTimeout} from 'ext:deno_websocket/01_websocket.js';
+        const socket = createWebSocketBranded();
+        socket[_role] = SERVER;
+        socket[_protocol] = 'chat';
+        socket[_idleTimeoutDuration] = 30;
+        socket[_idleTimeoutTimeout] = null;
+        if (!(socket instanceof WebSocket) || socket.readyState !== WebSocket.CONNECTING
+            || socket.protocol !== 'chat' || socket[_idleTimeoutDuration] !== 30) {
+          throw new Error('HTTP upgrade bridge lost its WebSocket state');
+        }
+        socket[_readyState] = WebSocket.OPEN;
+        if (socket.readyState !== WebSocket.OPEN) throw new Error('upgrade state did not reach the public interface');
+      "# }],
+    );
+    let _runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+      extensions: vec![
+        deno_webidl::deno_webidl::init(),
+        deno_web::deno_web::init(
+          std::sync::Arc::new(deno_web::BlobStore::default()), None, false,
+          deno_web::InMemoryBroadcastChannel::default(),
+        ),
+        deno_net::deno_net::init(None, None),
+        deno_fetch::deno_fetch::init(Default::default()),
+        deno_websocket::init(),
+        ws_bridge_test::init(),
+      ],
+      ..Default::default()
+    });
+  }
 
   /// Returns the size of the future produced by `f` without constructing any
   /// arguments or running it. `size_of_val` on such a future would require
