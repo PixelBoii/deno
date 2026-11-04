@@ -5,9 +5,7 @@ const { core, primordials } = __bootstrap;
 const webidl = core.loadExtScript("ext:deno_webidl/00_webidl.js");
 const {
   Blob,
-  BlobPrototype,
   File,
-  FilePrototype,
 } = core.loadExtScript("ext:deno_web/09_file.js");
 const {
   ArrayPrototypePush,
@@ -23,7 +21,6 @@ const {
   ReflectApply,
   SafeMap,
   SafeRegExp,
-  Symbol,
   SymbolFor,
   StringFromCharCode,
   StringPrototypeCharCodeAt,
@@ -40,7 +37,7 @@ const {
   Uint8Array,
 } = primordials;
 
-const entryList = Symbol("entry list");
+const formDataState = value => core.hostInterfaceData(value, "FormData");
 
 /**
  * @param {string} name
@@ -50,18 +47,18 @@ const entryList = Symbol("entry list");
  */
 function createEntry(name, value, filename) {
   if (
-    ObjectPrototypeIsPrototypeOf(BlobPrototype, value) &&
-    !ObjectPrototypeIsPrototypeOf(FilePrototype, value)
+    core.hasHostInterface(value, "Blob") &&
+    !core.hasHostInterface(value, "File")
   ) {
-    value = new File([value], "blob", { type: value.type });
+    value = new File([value], "blob", { type: core.hostInterfaceData(value, "Blob").type });
   }
   if (
-    ObjectPrototypeIsPrototypeOf(FilePrototype, value) &&
+    core.hasHostInterface(value, "File") &&
     filename !== undefined
   ) {
     value = new File([value], filename, {
-      type: value.type,
-      lastModified: value.lastModified,
+      type: core.hostInterfaceData(value, "Blob").type,
+      lastModified: core.hostInterfaceData(value, "File").lastModified,
     });
   }
   return {
@@ -78,16 +75,13 @@ function createEntry(name, value, filename) {
  */
 
 class FormData {
-  /** @type {FormDataEntry[]} */
-  [entryList] = [];
-
   /** @param {void} form */
   constructor(form) {
     if (form !== undefined) {
       webidl.illegalConstructor();
     }
-    this[webidl.brand] = webidl.brand;
     core.markHostInterface(this, "FormData");
+    formDataState(this).entries = [];
   }
 
   /**
@@ -102,7 +96,7 @@ class FormData {
     webidl.requiredArguments(arguments.length, 2, prefix);
 
     name = webidl.converters["USVString"](name, prefix, "Argument 1");
-    if (ObjectPrototypeIsPrototypeOf(BlobPrototype, valueOrBlobValue)) {
+    if (core.hasHostInterface(valueOrBlobValue, "Blob")) {
       valueOrBlobValue = webidl.converters["Blob"](
         valueOrBlobValue,
         prefix,
@@ -125,7 +119,7 @@ class FormData {
 
     const entry = createEntry(name, valueOrBlobValue, filename);
 
-    ArrayPrototypePush(this[entryList], entry);
+    ArrayPrototypePush(formDataState(this).entries, entry);
   }
 
   /**
@@ -139,7 +133,7 @@ class FormData {
 
     name = webidl.converters["USVString"](name, prefix, "Argument 1");
 
-    const list = this[entryList];
+    const list = formDataState(this).entries;
     let writeIdx = 0;
     for (let i = 0; i < list.length; i++) {
       if (list[i].name !== name) {
@@ -162,7 +156,7 @@ class FormData {
 
     name = webidl.converters["USVString"](name, prefix, "Argument 1");
 
-    const entries = this[entryList];
+    const entries = formDataState(this).entries;
     for (let i = 0; i < entries.length; ++i) {
       const entry = entries[i];
       if (entry.name === name) return entry.value;
@@ -182,7 +176,7 @@ class FormData {
     name = webidl.converters["USVString"](name, prefix, "Argument 1");
 
     const returnList = [];
-    const entries = this[entryList];
+    const entries = formDataState(this).entries;
     for (let i = 0; i < entries.length; ++i) {
       const entry = entries[i];
       if (entry.name === name) ArrayPrototypePush(returnList, entry.value);
@@ -201,7 +195,7 @@ class FormData {
 
     name = webidl.converters["USVString"](name, prefix, "Argument 1");
 
-    const entries = this[entryList];
+    const entries = formDataState(this).entries;
     for (let i = 0; i < entries.length; ++i) {
       const entry = entries[i];
       if (entry.name === name) return true;
@@ -221,7 +215,7 @@ class FormData {
     webidl.requiredArguments(arguments.length, 2, prefix);
 
     name = webidl.converters["USVString"](name, prefix, "Argument 1");
-    if (ObjectPrototypeIsPrototypeOf(BlobPrototype, valueOrBlobValue)) {
+    if (core.hasHostInterface(valueOrBlobValue, "Blob")) {
       valueOrBlobValue = webidl.converters["Blob"](
         valueOrBlobValue,
         prefix,
@@ -244,7 +238,7 @@ class FormData {
 
     const entry = createEntry(name, valueOrBlobValue, filename);
 
-    const list = this[entryList];
+    const list = formDataState(this).entries;
     let writeIdx = 0;
     let added = false;
     for (let i = 0; i < list.length; i++) {
@@ -275,10 +269,11 @@ class FormData {
   }
 }
 
-webidl.mixinPairIterable("FormData", FormData, entryList, "name", "value");
+webidl.mixinPairIterable("FormData", FormData, target => formDataState(target).entries, "name", "value");
 
 webidl.configureInterface(FormData);
 const FormDataPrototype = FormData.prototype;
+webidl.registerInterfaceBrand(FormDataPrototype, value => core.hasHostInterface(value, "FormData"));
 
 const ESCAPE_FILENAME_PATTERN = new SafeRegExp(/\r?\n|\r/g);
 const ESCAPE_PATTERN = new SafeRegExp(/([\n\r"])/g);
@@ -636,7 +631,7 @@ function parseFormData(body, boundary) {
  */
 function formDataFromEntries(entries) {
   const fd = new FormData();
-  fd[entryList] = entries;
+  formDataState(fd).entries = entries;
   return fd;
 }
 

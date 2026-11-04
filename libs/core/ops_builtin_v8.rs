@@ -79,6 +79,37 @@ pub fn op_has_host_interface(
   object.get_private(scope, key).is_some_and(|value| value.is_true())
 }
 
+// Backing data belongs to the genuine host instance and is shared by its
+// same-isolate realms. Author properties cannot copy or replace this storage.
+#[op2]
+pub fn op_host_interface_data<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+  value: v8::Local<'s, v8::Value>,
+  #[string] name: String,
+) -> Option<v8::Local<'s, v8::Object>> {
+  if value.is_proxy() { return None; }
+  let object = value.try_cast::<v8::Object>().ok()?;
+  let brand = host_interface_key(scope, &name);
+  if !object.get_private(scope, brand).is_some_and(|value| value.is_true()) {
+    return None;
+  }
+  let name = v8::String::new(scope, &format!("Deno.core.hostInterfaceData::{name}"))?;
+  let key = v8::Private::for_api(scope, Some(name));
+  if let Some(data) = object.get_private(scope, key)
+    .and_then(|value| value.try_cast::<v8::Object>().ok())
+  {
+    return Some(data);
+  }
+  let data = v8::Object::new(scope);
+  let null = v8::null(scope);
+  if data.set_prototype(scope, null.into()) != Some(true)
+    || object.set_private(scope, key, data.into()) != Some(true)
+  {
+    return None;
+  }
+  Some(data)
+}
+
 // API functions retain a JS implementation in their callback data. V8 owns that
 // reference, so closures (including ones in another realm) are traced normally.
 fn host_function_callback(

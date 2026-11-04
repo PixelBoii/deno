@@ -51,6 +51,7 @@
     op_create_console_method,
     op_mark_host_interface,
     op_has_host_interface,
+    op_host_interface_data,
     op_decode,
     op_deserialize,
     op_destructure_error,
@@ -1167,6 +1168,7 @@
     createHostFunction: op_create_host_function,
     markHostInterface: op_mark_host_interface,
     hasHostInterface: op_has_host_interface,
+    hostInterfaceData: op_host_interface_data,
     evalContext: (
       source,
       specifier,

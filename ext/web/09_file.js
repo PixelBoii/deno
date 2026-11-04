@@ -42,7 +42,7 @@ const {
   MathMax,
   MathMin,
   ObjectDefineProperty,
-  ObjectPrototypeIsPrototypeOf,
+  ReflectApply,
   RegExpPrototypeTest,
   SafeArrayIterator,
   SafeFinalizationRegistry,
@@ -50,7 +50,6 @@ const {
   StringPrototypeCharAt,
   StringPrototypeSlice,
   StringPrototypeToLowerCase,
-  Symbol,
   SymbolFor,
   TypeError,
   TypedArrayPrototypeGetBuffer,
@@ -147,7 +146,10 @@ function convertLineEndingsToNative(s) {
 async function* toIterator(parts) {
   for (let i = 0; i < parts.length; ++i) {
     // deno-lint-ignore deno-internal/prefer-primordials
-    yield* parts[i].stream();
+    const part = parts[i];
+    yield* core.hasHostInterface(part, "Blob")
+      ? ReflectApply(blobStream, part, [])
+      : part.stream();
   }
 }
 
@@ -188,9 +190,9 @@ function processBlobParts(parts, endings) {
         /** @type {DataView} */ (element),
       );
       ArrayPrototypePush(processedParts, BlobReference.fromUint8Array(chunk));
-    } else if (ObjectPrototypeIsPrototypeOf(BlobPrototype, element)) {
+    } else if (core.hasHostInterface(element, "Blob")) {
       ArrayPrototypePush(processedParts, element);
-      size += element.size;
+      size += blobBacking(element).size;
     } else if (typeof element === "string") {
       const chunk = core.encode(
         endings == "native" ? convertLineEndingsToNative(element) : element,
@@ -203,6 +205,27 @@ function processBlobParts(parts, endings) {
   }
   return { parts: processedParts, size };
 }
+
+async function blobBytes(blob) {
+  const bytes = new Uint8Array(blobBacking(blob).size);
+  const partIterator = toIterator(blobBacking(blob).parts);
+  let offset = 0;
+  while (true) {
+    const { value, done } = await AsyncGeneratorPrototypeNext(
+      partIterator,
+    );
+    if (done) break;
+    const byteLength = TypedArrayPrototypeGetByteLength(value);
+    if (byteLength > 0) {
+      TypedArrayPrototypeSet(bytes, value, offset);
+      offset += byteLength;
+    }
+  }
+  return bytes;
+}
+
+const blobBacking = value => core.hostInterfaceData(value, "Blob");
+const fileData = value => core.hostInterfaceData(value, "File");
 
 const NORMALIZE_PATTERN = new SafeRegExp(/^[\x20-\x7E]*$/);
 
@@ -225,10 +248,10 @@ function normalizeType(str) {
  * @returns {string[]}
  */
 function getParts(blob, bag = []) {
-  const parts = blob[_parts];
+  const parts = blobBacking(blob).parts;
   for (let i = 0; i < parts.length; ++i) {
     const part = parts[i];
-    if (ObjectPrototypeIsPrototypeOf(BlobPrototype, part)) {
+    if (core.hasHostInterface(part, "Blob")) {
       getParts(part, bag);
     } else {
       ArrayPrototypePush(bag, part._id);
@@ -237,17 +260,13 @@ function getParts(blob, bag = []) {
   return bag;
 }
 
-const _type = Symbol("Type");
-const _size = Symbol("Size");
-const _parts = Symbol("Parts");
-const _fileBacked = Symbol("FileBacked");
 
 /** @param {(BlobReference | Blob)[]} parts */
 function hasFileBackedPart(parts) {
   for (let i = 0; i < parts.length; ++i) {
     const part = parts[i];
     if (
-      ObjectPrototypeIsPrototypeOf(BlobPrototype, part) && part[_fileBacked]
+      core.hasHostInterface(part, "Blob") && blobBacking(part).fileBacked
     ) {
       return true;
     }
@@ -256,10 +275,6 @@ function hasFileBackedPart(parts) {
 }
 
 class Blob {
-  [_type] = "";
-  [_size] = 0;
-  [_parts];
-  [_fileBacked] = false;
 
   /**
    * @param {BlobPart[]} blobParts
@@ -278,7 +293,6 @@ class Blob {
       "Argument 2",
     );
 
-    this[webidl.brand] = webidl.brand;
     core.markHostInterface(this, "Blob");
 
     const { parts, size } = processBlobParts(
@@ -286,22 +300,22 @@ class Blob {
       options.endings,
     );
 
-    this[_parts] = parts;
-    this[_size] = size;
-    this[_type] = normalizeType(options.type);
-    this[_fileBacked] = hasFileBackedPart(parts);
+    blobBacking(this).parts = parts;
+    blobBacking(this).size = size;
+    blobBacking(this).type = normalizeType(options.type);
+    blobBacking(this).fileBacked = hasFileBackedPart(parts);
   }
 
   /** @returns {number} */
   get size() {
     webidl.assertBranded(this, BlobPrototype);
-    return this[_size];
+    return blobBacking(this).size;
   }
 
   /** @returns {string} */
   get type() {
     webidl.assertBranded(this, BlobPrototype);
-    return this[_type];
+    return blobBacking(this).type;
   }
 
   /**
@@ -332,7 +346,7 @@ class Blob {
     }
 
     // deno-lint-ignore no-this-alias
-    const O = this;
+    const O = blobBacking(this);
     /** @type {number} */
     let relativeStart;
     if (start === undefined) {
@@ -360,7 +374,7 @@ class Blob {
     const blobParts = [];
     let added = 0;
 
-    const parts = this[_parts];
+    const parts = blobBacking(this).parts;
     for (let i = 0; i < parts.length; ++i) {
       const part = parts[i];
       // don't add the overflow to new blobParts
@@ -369,7 +383,8 @@ class Blob {
         // and only use relativeEnd?
         break;
       }
-      const size = part.size;
+      const isBlob = core.hasHostInterface(part, "Blob");
+      const size = isBlob ? blobBacking(part).size : part.size;
       if (relativeStart && size <= relativeStart) {
         // Skip the beginning and change the relative
         // start & end position as we skip the unwanted parts
@@ -377,12 +392,11 @@ class Blob {
         relativeEnd -= size;
       } else {
         // deno-lint-ignore deno-internal/prefer-primordials
-        const chunk = part.slice(
-          relativeStart,
-          MathMin(part.size, relativeEnd),
-        );
-        added += chunk.size;
-        relativeEnd -= part.size;
+        const chunk = isBlob
+          ? ReflectApply(blobSlice, part, [relativeStart, MathMin(size, relativeEnd)])
+          : part.slice(relativeStart, MathMin(size, relativeEnd));
+        added += isBlob ? blobBacking(chunk).size : chunk.size;
+        relativeEnd -= size;
         ArrayPrototypePush(blobParts, chunk);
         relativeStart = 0; // All next sequential parts should start at 0
       }
@@ -397,9 +411,9 @@ class Blob {
     }
 
     const blob = new Blob([], { type: relativeContentType });
-    blob[_parts] = blobParts;
-    blob[_size] = span;
-    blob[_fileBacked] = this[_fileBacked];
+    blobBacking(blob).parts = blobParts;
+    blobBacking(blob).size = span;
+    blobBacking(blob).fileBacked = blobBacking(this).fileBacked;
     return blob;
   }
 
@@ -408,7 +422,7 @@ class Blob {
    */
   stream() {
     webidl.assertBranded(this, BlobPrototype);
-    const partIterator = toIterator(this[_parts]);
+    const partIterator = toIterator(blobBacking(this).parts);
     const stream = new ReadableStream({
       type: "bytes",
       /** @param {ReadableByteStreamController} controller */
@@ -436,29 +450,7 @@ class Blob {
    */
   textStream() {
     webidl.assertBranded(this, BlobPrototype);
-    return this.stream().pipeThrough(new TextDecoderStream());
-  }
-
-  /**
-   * @param {number} size
-   * @returns {Promise<Uint8Array>}
-   */
-  async #u8Array(size) {
-    const bytes = new Uint8Array(size);
-    const partIterator = toIterator(this[_parts]);
-    let offset = 0;
-    while (true) {
-      const { value, done } = await AsyncGeneratorPrototypeNext(
-        partIterator,
-      );
-      if (done) break;
-      const byteLength = TypedArrayPrototypeGetByteLength(value);
-      if (byteLength > 0) {
-        TypedArrayPrototypeSet(bytes, value, offset);
-        offset += byteLength;
-      }
-    }
-    return bytes;
+    return ReflectApply(blobStream, this, []).pipeThrough(new TextDecoderStream());
   }
 
   /**
@@ -466,7 +458,7 @@ class Blob {
    */
   async text() {
     webidl.assertBranded(this, BlobPrototype);
-    const buffer = await this.#u8Array(this.size);
+    const buffer = await blobBytes(this);
     return core.decode(buffer);
   }
 
@@ -475,7 +467,7 @@ class Blob {
    */
   async arrayBuffer() {
     webidl.assertBranded(this, BlobPrototype);
-    const buf = await this.#u8Array(this.size);
+    const buf = await blobBytes(this);
     return TypedArrayPrototypeGetBuffer(buf);
   }
 
@@ -484,14 +476,14 @@ class Blob {
    */
   async bytes() {
     webidl.assertBranded(this, BlobPrototype);
-    return await this.#u8Array(this.size);
+    return await blobBytes(this);
   }
 
   [SymbolFor("Deno.privateCustomInspect")](inspect, inspectOptions) {
     return inspect(
       createFilteredInspectProxy({
         object: this,
-        evaluate: ObjectPrototypeIsPrototypeOf(BlobPrototype, this),
+        evaluate: core.hasHostInterface(this, "Blob"),
         keys: [
           "size",
           "type",
@@ -504,6 +496,9 @@ class Blob {
 
 webidl.configureInterface(Blob);
 const BlobPrototype = Blob.prototype;
+const blobStream = BlobPrototype.stream;
+const blobSlice = BlobPrototype.slice;
+webidl.registerInterfaceBrand(BlobPrototype, value => core.hasHostInterface(value, "Blob"));
 
 webidl.converters["Blob"] = webidl.createInterfaceConverter(
   "Blob",
@@ -512,7 +507,7 @@ webidl.converters["Blob"] = webidl.createInterfaceConverter(
 webidl.converters["BlobPart"] = (V, prefix, context, opts) => {
   // Union for ((ArrayBuffer or ArrayBufferView) or Blob or USVString)
   if (typeof V == "object") {
-    if (ObjectPrototypeIsPrototypeOf(BlobPrototype, V)) {
+    if (core.hasHostInterface(V, "Blob")) {
       return webidl.converters["Blob"](V, prefix, context, opts);
     }
     if (isAnyArrayBuffer(V)) {
@@ -551,15 +546,8 @@ webidl.converters["BlobPropertyBag"] = webidl.createDictionaryConverter(
   blobPropertyBagDictionary,
 );
 
-const _Name = Symbol("[[Name]]");
-const _LastModified = Symbol("[[LastModified]]");
 
 class File extends Blob {
-  /** @type {string} */
-  [_Name];
-  /** @type {number} */
-  [_LastModified];
-
   /**
    * @param {BlobPart[]} fileBits
    * @param {string} fileName
@@ -582,35 +570,36 @@ class File extends Blob {
     );
 
     super(fileBits, options);
+    core.markHostInterface(this, "File");
 
     /** @type {string} */
-    this[_Name] = fileName;
+    fileData(this).name = fileName;
     if (options.lastModified === undefined) {
       /** @type {number} */
-      this[_LastModified] = DatePrototypeGetTime(new Date());
+      fileData(this).lastModified = DatePrototypeGetTime(new Date());
     } else {
       /** @type {number} */
-      this[_LastModified] = options.lastModified;
+      fileData(this).lastModified = options.lastModified;
     }
   }
 
   /** @returns {string} */
   get name() {
     webidl.assertBranded(this, FilePrototype);
-    return this[_Name];
+    return fileData(this).name;
   }
 
   /** @returns {number} */
   get lastModified() {
     webidl.assertBranded(this, FilePrototype);
-    return this[_LastModified];
+    return fileData(this).lastModified;
   }
 
   [SymbolFor("Deno.privateCustomInspect")](inspect, inspectOptions) {
     return inspect(
       createFilteredInspectProxy({
         object: this,
-        evaluate: ObjectPrototypeIsPrototypeOf(FilePrototype, this),
+        evaluate: core.hasHostInterface(this, "File"),
         keys: [
           "name",
           "size",
@@ -624,6 +613,7 @@ class File extends Blob {
 
 webidl.configureInterface(File);
 const FilePrototype = File.prototype;
+webidl.registerInterfaceBrand(FilePrototype, value => core.hasHostInterface(value, "File"));
 
 webidl.converters["FilePropertyBag"] = webidl.createDictionaryConverter(
   "FilePropertyBag",
@@ -714,10 +704,10 @@ class BlobReference {
  * @returns {BlobReference[]}
  */
 function getPartRefs(blob, bag = []) {
-  const parts = blob[_parts];
+  const parts = blobBacking(blob).parts;
   for (let i = 0; i < parts.length; ++i) {
     const part = parts[i];
-    if (ObjectPrototypeIsPrototypeOf(BlobPrototype, part)) {
+    if (core.hasHostInterface(part, "Blob")) {
       getPartRefs(part, bag);
     } else {
       ArrayPrototypePush(bag, part);
@@ -732,7 +722,7 @@ function getPartRefs(blob, bag = []) {
  * @returns {{ uuid: string, size: number }[]}
  */
 function cloneBlobParts(blob) {
-  if (blob[_fileBacked]) {
+  if (blobBacking(blob).fileBacked) {
     throw new TypeError("Invalid state: File-backed Blobs are not cloneable");
   }
   const refs = getPartRefs(blob);
@@ -748,9 +738,9 @@ ObjectDefineProperty(Blob.prototype, core.hostObjectBrand, {
   value: function () {
     return {
       type: "Blob",
-      mimeType: this[_type],
+      mimeType: blobBacking(this).type,
       parts: cloneBlobParts(this),
-      size: this[_size],
+      size: blobBacking(this).size,
     };
   },
   enumerable: false,
@@ -765,9 +755,9 @@ core.registerCloneableResource("Blob", (data) => {
     ArrayPrototypePush(parts, new BlobReference(uuid, size));
   }
   const blob = new Blob();
-  blob[_type] = data.mimeType;
-  blob[_size] = data.size;
-  blob[_parts] = parts;
+  blobBacking(blob).type = data.mimeType;
+  blobBacking(blob).size = data.size;
+  blobBacking(blob).parts = parts;
   return blob;
 });
 
@@ -779,7 +769,7 @@ core.registerCloneableResource("Blob", (data) => {
  */
 function markFileBackedBlob(blob) {
   webidl.assertBranded(blob, BlobPrototype);
-  blob[_fileBacked] = true;
+  blobBacking(blob).fileBacked = true;
   return blob;
 }
 
@@ -788,11 +778,11 @@ ObjectDefineProperty(File.prototype, core.hostObjectBrand, {
   value: function () {
     return {
       type: "File",
-      mimeType: this[_type],
+      mimeType: blobBacking(this).type,
       parts: cloneBlobParts(this),
-      size: this[_size],
-      name: this[_Name],
-      lastModified: this[_LastModified],
+      size: blobBacking(this).size,
+      name: fileData(this).name,
+      lastModified: fileData(this).lastModified,
     };
   },
   enumerable: false,
@@ -810,8 +800,8 @@ core.registerCloneableResource("File", (data) => {
     type: data.mimeType,
     lastModified: data.lastModified,
   });
-  file[_size] = data.size;
-  file[_parts] = parts;
+  blobBacking(file).size = data.size;
+  blobBacking(file).parts = parts;
   return file;
 });
 
@@ -846,9 +836,9 @@ function blobFromObjectUrl(url) {
   }
 
   const blob = new Blob();
-  blob[_type] = blobData.mediaType;
-  blob[_size] = totalSize;
-  blob[_parts] = parts;
+  blobBacking(blob).type = blobData.mediaType;
+  blobBacking(blob).size = totalSize;
+  blobBacking(blob).parts = parts;
   return blob;
 }
 
@@ -870,7 +860,7 @@ function createObjectURL(blob) {
   }
   blob = webidl.converters["Blob"](blob, prefix, "Argument 1");
 
-  return op_blob_create_object_url(blob.type, getParts(blob));
+  return op_blob_create_object_url(blobBacking(blob).type, getParts(blob));
 }
 
 /**
@@ -895,7 +885,7 @@ URL.createObjectURL = createObjectURL;
 URL.revokeObjectURL = revokeObjectURL;
 
 function isBlob(obj) {
-  return ObjectPrototypeIsPrototypeOf(BlobPrototype, obj);
+  return core.hasHostInterface(obj, "Blob");
 }
 
 return {
