@@ -279,6 +279,7 @@ class Blob {
     );
 
     this[webidl.brand] = webidl.brand;
+    core.markHostInterface(this, "Blob");
 
     const { parts, size } = processBlobParts(
       blobParts,

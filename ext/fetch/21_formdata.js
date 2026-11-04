@@ -87,6 +87,7 @@ class FormData {
       webidl.illegalConstructor();
     }
     this[webidl.brand] = webidl.brand;
+    core.markHostInterface(this, "FormData");
   }
 
   /**
