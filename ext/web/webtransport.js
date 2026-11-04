@@ -994,7 +994,7 @@ class WebTransportError extends DOMException {
 
   constructor(message = "", init = { __proto__: null }) {
     super(message, "WebTransportError");
-    this[webidl.brand] = webidl.brand;
+    core.markHostInterface(this, "WebTransportError");
 
     init = webidl.converters["WebTransportErrorOptions"](
       init,
@@ -1018,6 +1018,7 @@ class WebTransportError extends DOMException {
 }
 webidl.configureInterface(WebTransportError);
 const WebTransportErrorPrototype = WebTransportError.prototype;
+webidl.registerInterfaceBrand(WebTransportErrorPrototype, value => core.hasHostInterface(value, "WebTransportError"));
 
 webidl.converters.WebTransportSendGroup = webidl.createInterfaceConverter(
   "WebTransportSendGroup",

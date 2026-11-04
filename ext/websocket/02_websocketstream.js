@@ -481,7 +481,7 @@ class WebSocketError extends DOMException {
 
   constructor(message = "", init = { __proto__: null }) {
     super(message, "WebSocketError");
-    this[webidl.brand] = webidl.brand;
+    core.markHostInterface(this, "WebSocketError");
 
     init = webidl.converters["WebSocketCloseInfo"](
       init,
@@ -527,5 +527,6 @@ class WebSocketError extends DOMException {
 }
 webidl.configureInterface(WebSocketError);
 const WebSocketErrorPrototype = WebSocketError.prototype;
+webidl.registerInterfaceBrand(WebSocketErrorPrototype, value => core.hasHostInterface(value, "WebSocketError"));
 
 export { WebSocketError, WebSocketStream };

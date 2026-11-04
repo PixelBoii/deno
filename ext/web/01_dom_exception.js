@@ -21,7 +21,6 @@ const {
   ReflectConstruct,
   ReflectHas,
   RangeError,
-  Symbol,
   SymbolFor,
 } = primordials;
 
@@ -39,9 +38,6 @@ function getCreateFilteredInspectProxy() {
   return _createFilteredInspectProxy;
 }
 
-const _name = Symbol("name");
-const _message = Symbol("message");
-const _code = Symbol("code");
 
 // Defined in WebIDL 4.3.
 // https://webidl.spec.whatwg.org/#idl-DOMException
@@ -109,10 +105,9 @@ const nameToCodeMapping = ObjectCreate(null, {
 
 // Defined in WebIDL 4.3.
 // https://webidl.spec.whatwg.org/#idl-DOMException
+const exceptionData = value => core.hostInterfaceData(value, "DOMException");
+
 class DOMException {
-  [_message];
-  [_name];
-  [_code];
 
   // https://webidl.spec.whatwg.org/#dom-domexception-domexception
   // Since Node.js allows the second argument to accept an options object, we need to support that
@@ -152,10 +147,10 @@ class DOMException {
     }
     const code = nameToCodeMapping[name] ?? 0;
 
-    error[_message] = message;
-    error[_name] = name;
-    error[_code] = code;
-    error[webidl.brand] = webidl.brand;
+    core.markHostInterface(error, "DOMException");
+    exceptionData(error).message = message;
+    exceptionData(error).name = name;
+    exceptionData(error).code = code;
     core.setHostObjectTag(error, () => ({
       type: "DOMException",
       message,
@@ -168,17 +163,17 @@ class DOMException {
 
   get message() {
     webidl.assertBranded(this, DOMExceptionPrototype);
-    return this[_message];
+    return exceptionData(this).message;
   }
 
   get name() {
     webidl.assertBranded(this, DOMExceptionPrototype);
-    return this[_name];
+    return exceptionData(this).name;
   }
 
   get code() {
     webidl.assertBranded(this, DOMExceptionPrototype);
-    return this[_code];
+    return exceptionData(this).code;
   }
 
   [SymbolFor("Deno.privateCustomInspect")](inspect, inspectOptions) {
@@ -207,6 +202,7 @@ ObjectSetPrototypeOf(DOMException.prototype, ErrorPrototype);
 
 webidl.configureInterface(DOMException);
 const DOMExceptionPrototype = DOMException.prototype;
+webidl.registerInterfaceBrand(DOMExceptionPrototype, value => core.hasHostInterface(value, "DOMException"));
 
 const entries = ObjectEntries({
   INDEX_SIZE_ERR,
@@ -256,17 +252,14 @@ core.registerCloneableResource("DOMException", (data) => {
   return ex;
 });
 
-const _quota = Symbol("quota");
-const _requested = Symbol("requested");
 
 // Defined in WebIDL 4.3.1.
 // https://webidl.spec.whatwg.org/#quotaexceedederror
 class QuotaExceededError extends DOMException {
-  [_quota];
-  [_requested];
 
   constructor(message = "", options = { __proto__: null }) {
     super(message, "QuotaExceededError");
+    core.markHostInterface(this, "QuotaExceededError");
 
     if (options !== null && typeof options === "object") {
       if (ObjectHasOwn(options, "quota")) {
@@ -280,9 +273,9 @@ class QuotaExceededError extends DOMException {
             "Failed to construct 'QuotaExceededError': quota must not be negative",
           );
         }
-        this[_quota] = quota;
+        exceptionData(this).quota = quota;
       } else {
-        this[_quota] = null;
+        exceptionData(this).quota = null;
       }
       if (ObjectHasOwn(options, "requested")) {
         const requested = webidl.converters["unrestricted double"](
@@ -295,29 +288,30 @@ class QuotaExceededError extends DOMException {
             "Failed to construct 'QuotaExceededError': requested must not be negative",
           );
         }
-        this[_requested] = requested;
+        exceptionData(this).requested = requested;
       } else {
-        this[_requested] = null;
+        exceptionData(this).requested = null;
       }
     } else {
-      this[_quota] = null;
-      this[_requested] = null;
+      exceptionData(this).quota = null;
+      exceptionData(this).requested = null;
     }
   }
 
   get quota() {
     webidl.assertBranded(this, QuotaExceededErrorPrototype);
-    return this[_quota];
+    return exceptionData(this).quota;
   }
 
   get requested() {
     webidl.assertBranded(this, QuotaExceededErrorPrototype);
-    return this[_requested];
+    return exceptionData(this).requested;
   }
 }
 
 webidl.configureInterface(QuotaExceededError);
 const QuotaExceededErrorPrototype = QuotaExceededError.prototype;
+webidl.registerInterfaceBrand(QuotaExceededErrorPrototype, value => core.hasHostInterface(value, "QuotaExceededError"));
 
 return {
   DOMException,

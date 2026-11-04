@@ -91,7 +91,9 @@ pub fn op_get_host_object_tag<'s>(
   object.get_private(scope, key)
 }
 
-#[op2(fast)]
+// Host interface storage is also used by exception constructors inside ops.
+// These primitives access V8 private data without borrowing OpState or calling JS.
+#[op2(fast, reentrant)]
 pub fn op_mark_host_interface(
   scope: &mut v8::PinScope,
   object: v8::Local<v8::Object>,
@@ -102,7 +104,7 @@ pub fn op_mark_host_interface(
   assert_eq!(object.set_private(scope, key, value.into()), Some(true));
 }
 
-#[op2(nofast)]
+#[op2(nofast, reentrant)]
 pub fn op_has_host_interface(
   scope: &mut v8::PinScope,
   value: v8::Local<v8::Value>,
@@ -116,7 +118,7 @@ pub fn op_has_host_interface(
 
 // Backing data belongs to the genuine host instance and is shared by its
 // same-isolate realms. Author properties cannot copy or replace this storage.
-#[op2]
+#[op2(reentrant)]
 pub fn op_host_interface_data<'s>(
   scope: &mut v8::PinScope<'s, '_>,
   value: v8::Local<'s, v8::Value>,

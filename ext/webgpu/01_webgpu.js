@@ -145,6 +145,7 @@ class GPUPipelineError extends DOMException {
       "Argument 2",
     );
     super(message, "GPUPipelineError");
+    core.markHostInterface(this, "GPUPipelineError");
 
     this.#reason = options.reason;
   }
@@ -155,6 +156,7 @@ class GPUPipelineError extends DOMException {
   }
 }
 const GPUPipelineErrorPrototype = GPUPipelineError.prototype;
+webidl.registerInterfaceBrand(GPUPipelineErrorPrototype, value => core.hasHostInterface(value, "GPUPipelineError"));
 
 class GPUUncapturedErrorEvent extends Event {
   #error;
