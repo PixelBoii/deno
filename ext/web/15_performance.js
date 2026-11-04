@@ -593,33 +593,27 @@ function createObserverDelivery(entries) {
 }
 op_performance_observer_register_factory(createObserverDelivery);
 
-function observePerformance(observer, options, count) {
+webidl.converters.PerformanceObserverInit = webidl.createDictionaryConverter(
+  "PerformanceObserverInit",
+  [
+    { key: "buffered", converter: webidl.converters.boolean },
+    { key: "durationThreshold", converter: webidl.converters.DOMHighResTimeStamp },
+    { key: "entryTypes", converter: webidl.converters["sequence<DOMString>"] },
+    { key: "type", converter: webidl.converters.DOMString },
+  ],
+);
+
+function observePerformance(observer, options) {
   const state = observerData(observer);
-  const prefix = "Failed to execute 'observe' on 'PerformanceObserver'";
-  webidl.requiredArguments(count, 1, prefix);
-  options = options ?? {};
-  let { entryTypes, type } = options;
-  if (entryTypes !== undefined && type !== undefined) {
-    throw new TypeError(`${prefix}: Cannot specify both 'entryTypes' and 'type'.`);
-  }
-  if (entryTypes === undefined && type === undefined) {
-    throw new TypeError(`${prefix}: Either 'entryTypes' or 'type' must be specified.`);
-  }
-  const mode = entryTypes !== undefined ? "multiple" : "single";
-  if (state.observerType !== undefined && state.observerType !== mode) {
-    throw new DOMException(`${prefix}: Cannot change observer type.`, "InvalidModificationError");
-  }
-  state.observerType = mode;
+  const { entryTypes, type } = options;
   let types;
   if (entryTypes !== undefined) {
-    entryTypes = webidl.converters["sequence<DOMString>"](entryTypes, prefix, "entryTypes");
     types = [];
     for (let i = 0; i < entryTypes.length; i++) {
       if (ArrayPrototypeIncludes(supportedEntryTypes, entryTypes[i])) ArrayPrototypePush(types, entryTypes[i]);
     }
     if (types.length === 0) return;
   } else {
-    type = webidl.converters.DOMString(type, prefix, "type");
     if (!ArrayPrototypeIncludes(supportedEntryTypes, type)) return;
     types = copyObserverEntries(state.entryTypes);
     if (!ArrayPrototypeIncludes(types, type)) ArrayPrototypePush(types, type);
@@ -675,8 +669,23 @@ class PerformanceObserver {
     op_performance_object_bind(this, state, 0);
     core.markHostInterface(this, "PerformanceObserver");
   }
-  observe(options) {
-    return observerData(this).observe(this, options, arguments.length);
+  observe(options = undefined) {
+    const state = observerData(this);
+    const prefix = "Failed to execute 'observe' on 'PerformanceObserver'";
+    options = webidl.converters.PerformanceObserverInit(options, prefix, "Argument 1");
+    const { entryTypes, type } = options;
+    if (entryTypes !== undefined && type !== undefined) {
+      throw new TypeError(`${prefix}: Cannot specify both 'entryTypes' and 'type'.`);
+    }
+    if (entryTypes === undefined && type === undefined) {
+      throw new TypeError(`${prefix}: Either 'entryTypes' or 'type' must be specified.`);
+    }
+    const mode = entryTypes !== undefined ? "multiple" : "single";
+    if (state.observerType !== undefined && state.observerType !== mode) {
+      throw new DOMException(`${prefix}: Cannot change observer type.`, "InvalidModificationError");
+    }
+    state.observerType = mode;
+    return state.observe(this, options);
   }
   disconnect() {
     return observerData(this).disconnect(this);

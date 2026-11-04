@@ -53,6 +53,20 @@ fn performance_timeline_defaults_and_observer_order() {
     assert(p.getEntriesByName('').length === 1);
     assert(p.getEntriesByType('').length === 0);
     observer.disconnect();
+    assert(Observer.prototype.observe.length === 0);
+    const buffered = new Observer(() => {});
+    buffered.observe({type: 'mark', buffered: 1});
+    assert(buffered.takeRecords().some(entry => entry.name === 'late'));
+    buffered.disconnect();
+    const reusable = new Observer(() => {}), sentinel = {};
+    let conversionError;
+    try { reusable.observe({entryTypes: {[Symbol.iterator]() { throw sentinel; }}}); }
+    catch (error) { conversionError = error; }
+    assert(conversionError === sentinel);
+    reusable.observe({type: 'mark'});
+    p.mark('after-conversion-error');
+    assert(reusable.takeRecords().some(entry => entry.name === 'after-conversion-error'));
+    reusable.disconnect();
     const floor = Math.floor;
     for (const precision of [0.1, 0.005]) {
       timeline.setTimeOrigin({reset: true, precision});
