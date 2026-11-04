@@ -1382,7 +1382,9 @@ function mixinPairIterable(name, prototype, dataSymbol, keyKey, valueKey) {
     // 'b' }`). Picked up by Deno's `util.inspect` via the privateCustomInspect
     // path so `node:util.inspect` returns the same shape.
     [SymbolFor("Deno.privateCustomInspect")](inspect, inspectOptions) {
-      const internal = this == null ? undefined : this[_iteratorInternal];
+      const internal = core.ops.op_pair_iterator_state
+        ? core.ops.op_pair_iterator_state(this)
+        : this == null ? undefined : this[_iteratorInternal];
       const label = `${name} Iterator`;
       if (!internal) return `${label} {}`;
       const { target, kind, index } = internal;
@@ -1404,7 +1406,13 @@ function mixinPairIterable(name, prototype, dataSymbol, keyKey, valueKey) {
     },
   });
   configurePrivateInspectors(iteratorPrototype);
+  if (core.ops.op_bind_pair_iterator) {
+    core.ops.op_bind_pair_iterator(iteratorPrototype, name, keyKey, valueKey);
+  }
   function createDefaultIterator(target, kind) {
+    if (core.ops.op_create_pair_iterator) {
+      return core.ops.op_create_pair_iterator(iteratorPrototype, target, dataSymbol, kind);
+    }
     const iterator = ObjectCreate(iteratorPrototype);
     ObjectDefineProperty(iterator, _iteratorInternal, {
       __proto__: null,

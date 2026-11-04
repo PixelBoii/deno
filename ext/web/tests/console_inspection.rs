@@ -1,7 +1,7 @@
 // Copyright 2018-2026 the Deno authors. MIT license.
 
-#[test]
-fn platform_inspection_preserves_cli_hooks_and_private_callbacks() {
+#[tokio::test(flavor = "current_thread")]
+async fn platform_inspection_preserves_cli_hooks_and_private_callbacks() {
   deno_core::extension!(
     inspection_test_setup,
     esm_entry_point = "ext:inspection_test_setup/setup.js",
@@ -12,6 +12,7 @@ fn platform_inspection_preserves_cli_hooks_and_private_callbacks() {
         globalThis.entryClass = core.loadExtScript("ext:deno_web/15_performance.js").PerformanceEntry;
         globalThis.registerInspector = core.ops.op_console_register_private_inspector;
         globalThis.webidlInspection = core.loadExtScript("ext:deno_webidl/00_webidl.js");
+        globalThis.urlSearchParamsClass = core.loadExtScript("ext:deno_web/00_url.js").URLSearchParams;
       "#
     }],
     options = {private_inspection: bool},
@@ -58,6 +59,16 @@ fn platform_inspection_preserves_cli_hooks_and_private_callbacks() {
       }});
       assert(consoleInspection.inspect(defined) === 'Defined actual=19');
       assert(Object.hasOwn(defined, key) === !native);
+      const params = new urlSearchParamsClass('a=1&b=2');
+      const iterator = params.entries();
+      let iteratorPreview = consoleInspection.inspect(iterator);
+      if (!iteratorPreview.includes('"a", "1"')) throw new Error('iterator preview=' + iteratorPreview);
+      assert(iterator.next().value.join() === 'a,1');
+      iteratorPreview = consoleInspection.inspect(iterator);
+      if (!iteratorPreview.includes('"b", "2"') || iteratorPreview.includes('"a", "1"')) throw new Error('advanced iterator preview=' + iteratorPreview);
+      params.append('c', '3');
+      assert(iterator.next().value.join() === 'b,2');
+      assert(iterator.next().value.join() === 'c,3' && iterator.next().done);
       let stackReads = 0;
       function actualErrorCreator() {{return new Error('captured native message');}}
       const error = actualErrorCreator();
