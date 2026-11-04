@@ -95,6 +95,7 @@ pub use crate::convert::FromV8Scopeless;
 pub use crate::convert::ToV8;
 pub use crate::cppgc::GarbageCollected;
 pub use crate::ops_builtin_v8::mark_as_unserializable_host_object;
+pub use crate::ops_builtin_v8::enable_native_host_exceptions;
 pub use crate::error::exception_to_err;
 pub use crate::extensions::AccessorType;
 pub use crate::extensions::Extension;

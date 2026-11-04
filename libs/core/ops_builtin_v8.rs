@@ -56,6 +56,57 @@ fn host_interface_key<'s>(
   v8::Private::for_api(scope, Some(name))
 }
 
+/// Use native host exception objects in this realm. The HTML embedder also
+/// installs V8's IsJSApiWrapperNativeErrorCallback for the private
+/// `Deno.core.hostInterface::NativeHostException` brand. Other realms retain
+/// the default Error-based exception representation.
+pub fn enable_native_host_exceptions(scope: &mut v8::PinScope) {
+  let name =
+    v8::String::new(scope, "Deno.core.nativeHostExceptionsEnabled").unwrap();
+  let key = v8::Private::for_api(scope, Some(name));
+  let global = scope.get_current_context().global(scope);
+  let enabled = v8::Boolean::new(scope, true);
+  global.set_private(scope, key, enabled.into());
+}
+
+// V8 API wrappers have a dedicated native-error classification. DOMException
+// uses this real cppgc host instance and its private IDL state, rather than
+// invoking the JavaScript Error constructor during host object construction.
+struct NativeHostException;
+unsafe impl crate::cppgc::GarbageCollected for NativeHostException {
+  fn trace(&self, _: &mut v8::cppgc::Visitor) {}
+  fn get_name(&self) -> &'static std::ffi::CStr {
+    c"NativeHostException"
+  }
+}
+
+// Exception construction can be reentrant inside an op. This factory only
+// accesses V8/cppgc state; it does not borrow OpState or invoke author code.
+#[op2(reentrant)]
+pub fn op_create_host_exception<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+  receiver: v8::Local<'s, v8::Object>,
+) -> Option<v8::Local<'s, v8::Object>> {
+  let name = v8::String::new(scope, "Deno.core.nativeHostExceptionsEnabled")?;
+  let key = v8::Private::for_api(scope, Some(name));
+  let global = scope.get_current_context().global(scope);
+  if !global
+    .get_private(scope, key)
+    .is_some_and(|value| value.is_true())
+  {
+    return None;
+  }
+  let prototype = receiver.get_prototype(scope)?;
+  let exception = crate::cppgc::make_cppgc_object(scope, NativeHostException);
+  if exception.set_prototype(scope, prototype) != Some(true) {
+    return None;
+  }
+  let key = host_interface_key(scope, "NativeHostException");
+  let value = v8::Boolean::new(scope, true);
+  exception.set_private(scope, key, value.into());
+  Some(exception)
+}
+
 fn host_object_tag_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
   let name = v8_static_strings::HOST_OBJECT.v8_string(scope).unwrap();
   v8::Private::for_api(scope, Some(name))

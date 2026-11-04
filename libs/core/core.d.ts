@@ -89,6 +89,12 @@ export namespace core {
     illegalConstructor?: boolean,
   ): Function;
 
+  /** Create a native cppgc host exception with the instance's prototype when
+   * the embedder has enabled native host exceptions; otherwise returns null.
+   * IDL data and serialization are supplied by the exception implementation.
+   */
+  function createHostException(instance: object): object | null;
+
   /** Register a real host interface instance using a private V8 brand.
    * This does not change structured serialization or add any public properties.
    * The brand is shared across realms in one isolate; proxies and copies do not

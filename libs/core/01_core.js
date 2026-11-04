@@ -47,6 +47,7 @@
     op_current_user_call_site,
     op_compile_function,
     op_create_host_function,
+    op_create_host_exception,
     op_create_console_method,
     op_mark_host_interface,
     op_has_host_interface,
@@ -1166,6 +1167,7 @@
       return [result, null];
     },
     createHostFunction: op_create_host_function,
+    createHostException: op_create_host_exception,
     markHostInterface: op_mark_host_interface,
     hasHostInterface: op_has_host_interface,
     hostInterfaceData: op_host_interface_data,

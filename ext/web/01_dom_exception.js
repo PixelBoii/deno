@@ -119,11 +119,13 @@ class DOMException {
       "Argument 1",
     );
 
-    // execute Error constructor to have stack property and [[ErrorData]] internal slot
-    const error = ReflectConstruct(Error, [], new.target);
+    const nativeError = core.createHostException(this);
+    // Default Deno realms retain their Error-based representation. An HTML
+    // embedder constructs the native Web IDL host exception directly.
+    const error = nativeError ?? ReflectConstruct(Error, [], new.target);
 
     let name;
-    if (options !== null && typeof options === "object") {
+    if (!nativeError && options !== null && typeof options === "object") {
       name = webidl.converters.DOMString(
         options.name,
         "Failed to construct 'DOMException'",
@@ -151,12 +153,9 @@ class DOMException {
     exceptionData(error).message = message;
     exceptionData(error).name = name;
     exceptionData(error).code = code;
-    core.setHostObjectTag(error, () => ({
-      type: "DOMException",
-      message,
-      name,
-      stack: error.stack,
-    }));
+    core.setHostObjectTag(error, () => nativeError
+      ? { type: "DOMException", message, name }
+      : { type: "DOMException", message, name, stack: error.stack });
 
     return error;
   }

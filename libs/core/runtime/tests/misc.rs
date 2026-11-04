@@ -2481,6 +2481,43 @@ fn test_storage_serialization_rejects_shared_memory() {
   "#).unwrap();
 }
 
+#[test]
+fn test_native_host_exception_factory() {
+  let mut runtime = JsRuntime::new(RuntimeOptions::default());
+  runtime.execute_script("default-host-exceptions", r#"
+    function check(value){if(!value)throw Error('native host exception');}
+    const receiver=Object.create({constructorName:'Exception'});
+    check(Deno.core.createHostException(receiver)===null);
+  "#).unwrap();
+  {
+    deno_core::scope!(scope, runtime);
+    crate::enable_native_host_exceptions(scope);
+  }
+  // Native exceptions can be constructed while an outer op owns OpState.
+  let state = runtime.op_state();
+  let borrow = state.borrow_mut();
+  let value = runtime.execute_script("native-host-exceptions", r#"
+    const exception=Deno.core.createHostException(receiver);
+    exception;
+  "#).unwrap();
+  drop(borrow);
+  runtime.execute_script("native-host-exception-state", r#"
+    check(Object.getPrototypeOf(exception)===Object.getPrototypeOf(receiver));
+    check(Reflect.ownKeys(exception).length===0&&!('stack' in exception));
+    check(Deno.core.hasHostInterface(exception,'NativeHostException'));
+    for(const value of [{},Object.create(Object.getPrototypeOf(exception)),new Proxy(exception,{})])
+      check(!Deno.core.hasHostInterface(value,'NativeHostException'));
+    exception.authorProperty='retained';check(exception.authorProperty==='retained');
+    const error=new Error('ordinary author error');
+    check(Error.isError(error)&&error.stack.includes('ordinary author error'));
+  "#).unwrap();
+  {
+    deno_core::scope!(scope, runtime);
+    let value = v8::Local::new(scope, value);
+    assert!(value.try_cast::<v8::Object>().unwrap().is_api_wrapper());
+  }
+}
+
 #[tokio::test]
 async fn test_native_webidl_receiver_errors() {
   struct BrowserReceiver;

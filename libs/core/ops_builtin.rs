@@ -119,6 +119,7 @@ builtin_ops! {
   ops_builtin_v8::op_drain_pending_rejections,
   ops_builtin_v8::op_compile_function,
   ops_builtin_v8::op_create_host_function,
+  ops_builtin_v8::op_create_host_exception,
   ops_builtin_v8::op_create_console_method,
   ops_builtin_v8::op_mark_host_interface,
   ops_builtin_v8::op_has_host_interface,
