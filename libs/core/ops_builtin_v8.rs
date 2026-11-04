@@ -169,7 +169,11 @@ fn host_function_callback(
       if !valid.boolean_value(scope) {
         let prefix = data.get_index(scope, 4).unwrap().to_rust_string_lossy(scope);
         let interface = data.get_index(scope, 6).unwrap().to_rust_string_lossy(scope);
-        failure = Some(format!("{prefix}: parameter 1 is not of type '{interface}'."));
+        failure = Some(if data.get_index(scope, 8).unwrap().is_true() {
+          format!("{prefix}: Overload resolution failed.")
+        } else {
+          format!("{prefix}: parameter 1 is not of type '{interface}'.")
+        });
       }
     }
   }
@@ -202,9 +206,12 @@ fn host_function_callback(
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HostFunctionRequiredArguments {
   count: u32,
   prefix: String,
+    #[serde(default)]
+    first_argument_overload: bool,
 }
 
 // Keep the inspector invocation on a native frame. A JavaScript dispatcher or
@@ -273,7 +280,7 @@ pub fn op_create_host_function<'s>(
     .unwrap_or_else(|| v8::undefined(scope).into());
   let promise = v8::Boolean::new(scope, promise);
   let required_arguments = required_arguments.unwrap_or(HostFunctionRequiredArguments {
-    count: 0, prefix: String::new(),
+    count: 0, prefix: String::new(), first_argument_overload: false,
   });
   let count = v8::Integer::new_from_unsigned(scope, required_arguments.count);
   let prefix = v8::String::new(scope, &required_arguments.prefix).unwrap();
@@ -281,7 +288,8 @@ pub fn op_create_host_function<'s>(
     .unwrap_or_else(|| v8::undefined(scope).into());
   let interface = v8::String::new(scope, first_argument_interface.as_deref().unwrap_or("Object")).unwrap();
   let illegal_constructor = v8::Boolean::new(scope, illegal_constructor);
-  let data = v8::Array::new_with_elements(scope, &[callback.into(), checker, promise.into(), count.into(), prefix.into(), argument_checker, interface.into(), illegal_constructor.into()]);
+  let overload = v8::Boolean::new(scope, required_arguments.first_argument_overload);
+  let data = v8::Array::new_with_elements(scope, &[callback.into(), checker, promise.into(), count.into(), prefix.into(), argument_checker, interface.into(), illegal_constructor.into(), overload.into()]);
   let function = v8::Function::builder(host_function_callback)
     .data(data.into())
     .length(length)

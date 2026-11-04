@@ -83,7 +83,7 @@ export namespace core {
     constructable: boolean,
     receiverCheck?: (receiver: unknown) => boolean,
     promise?: boolean,
-    requiredArguments?: {count: number; prefix: string},
+    requiredArguments?: {count: number; prefix: string; firstArgumentOverload?: boolean},
     firstArgumentCheck?: (value: unknown) => boolean,
     firstArgumentInterface?: string,
     illegalConstructor?: boolean,
