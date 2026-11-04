@@ -16,6 +16,38 @@ use crate::modules::StaticModuleLoader;
 use crate::op2;
 
 #[test]
+fn test_new_realm_is_visible_to_inspector() {
+  use std::cell::RefCell;
+  use serde_json::json;
+  let mut runtime = JsRuntime::new(RuntimeOptions {
+    inspector: true,
+    ..Default::default()
+  });
+  let messages = Rc::new(RefCell::new(Vec::<serde_json::Value>::new()));
+  let received = messages.clone();
+  let mut session = crate::JsRuntimeInspector::create_local_session(
+    runtime.inspector(),
+    Box::new(move |message| {
+      received.borrow_mut().push(serde_json::from_str(&message.content).unwrap());
+    }),
+    crate::InspectorSessionKind::NonBlocking { wait_for_disconnect: false },
+  );
+  session.post_message(1, "Runtime.enable", Some(json!({})));
+  let realm = runtime.new_realm(Default::default()).unwrap();
+  realm.execute_script(runtime.v8_isolate(), "realm-marker.js", "globalThis.realmMarker = 42").unwrap();
+  let contexts = messages.borrow().iter().filter(|message| {
+    message["method"] == "Runtime.executionContextCreated"
+  }).map(|message| message["params"]["context"]["id"].clone()).collect::<Vec<_>>();
+  assert_eq!(contexts.len(), 2, "both main and additional contexts are reported");
+  session.post_message(2, "Runtime.evaluate", Some(json!({
+    "expression": "globalThis.realmMarker", "contextId": contexts[1], "returnByValue": true,
+  })));
+  let messages = messages.borrow();
+  let result = messages.iter().find(|message| message["id"] == 2).unwrap();
+  assert_eq!(result["result"]["result"]["value"], 42);
+}
+
+#[test]
 fn test_new_realm_with_embedder_context() {
   struct Marker(u32);
   #[op2(fast)]

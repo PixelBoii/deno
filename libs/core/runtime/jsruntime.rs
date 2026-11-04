@@ -967,6 +967,10 @@ impl JsRuntime {
       )?
     };
     state_rc.realms.borrow_mut().push(realm.clone());
+    state_rc.with_inspector(|inspector| {
+      let name = format!("realm [{}]", state_rc.realms.borrow().len());
+      inspector.context_created(scope, realm.context().clone(), &name);
+    });
     let module_map = realm.0.module_map();
     // Initializing a realm must not drain microtasks from the caller's realm.
     module_map.suppress_microtask_checkpoints.set(true);
@@ -980,6 +984,9 @@ impl JsRuntime {
     );
     module_map.suppress_microtask_checkpoints.set(false);
     if let Err(err) = result {
+      state_rc.with_inspector(|inspector| {
+        inspector.context_destroyed(scope, realm.context().clone());
+      });
       state_rc
         .realms
         .borrow_mut()

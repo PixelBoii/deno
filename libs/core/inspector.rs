@@ -962,6 +962,24 @@ impl JsRuntimeInspector {
     *self.state.is_dispatching_message.borrow()
   }
 
+  /// Register an additional runtime realm in the same inspector context group.
+  pub(crate) fn context_created(
+    &self,
+    scope: &mut v8::PinScope<'_, '_>,
+    context: v8::Global<v8::Context>,
+    name: &str,
+  ) {
+    let context = v8::Local::new(scope, context);
+    self.v8_inspector.context_created(
+      context,
+      Self::CONTEXT_GROUP_ID,
+      v8::inspector::StringView::from(name.as_bytes()),
+      v8::inspector::StringView::from(
+        br#"{"isDefault":false,"type":"default"}"#.as_slice(),
+      ),
+    );
+  }
+
   pub fn context_destroyed(
     &self,
     scope: &mut v8::PinScope<'_, '_>,
