@@ -13,6 +13,7 @@ async fn platform_inspection_preserves_cli_hooks_and_private_callbacks() {
         globalThis.registerInspector = core.ops.op_console_register_private_inspector;
         globalThis.webidlInspection = core.loadExtScript("ext:deno_webidl/00_webidl.js");
         globalThis.urlSearchParamsClass = core.loadExtScript("ext:deno_web/00_url.js").URLSearchParams;
+        globalThis.urlClass = core.loadExtScript("ext:deno_web/00_url.js").URL;
       "#
     }],
     options = {private_inspection: bool},
@@ -69,6 +70,15 @@ async fn platform_inspection_preserves_cli_hooks_and_private_callbacks() {
       params.append('c', '3');
       assert(iterator.next().value.join() === 'b,2');
       assert(iterator.next().value.join() === 'c,3' && iterator.next().done);
+      const linkedUrl = new urlClass('https://example.test/?a=1');
+      const query = linkedUrl.searchParams;
+      assert(Reflect.ownKeys(query).length === 0);
+      query.toString = () => {{throw new Error('author serializer');}};
+      Object.freeze(query);
+      urlSearchParamsClass.prototype.append.call(query, 'b', '2');
+      assert(linkedUrl.search === '?a=1&b=2');
+      linkedUrl.search = '?reset=3';
+      assert(urlSearchParamsClass.prototype.get.call(query, 'reset') === '3');
       let stackReads = 0;
       function actualErrorCreator() {{return new Error('captured native message');}}
       const error = actualErrorCreator();

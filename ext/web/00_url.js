@@ -46,8 +46,16 @@ const { markNotSerializable } = core.loadExtScript(
   "ext:deno_web/13_message_port.js",
 );
 
-const _list = Symbol("list");
-const _urlObject = Symbol("url object");
+function paramsState(value) {
+  return core.ops.op_url_search_params_data(value);
+}
+
+function updateUrlSearch(params) {
+  const state = paramsState(params);
+  if (state.updateUrl !== null) {
+    state.updateUrl(op_url_stringify_search_params(state.list));
+  }
+}
 
 // Pre-frozen argument-name arrays used to produce Node-compatible
 // `ERR_MISSING_ARGS` messages from `webidl.requiredArguments`.
@@ -118,19 +126,16 @@ function getSerialization(status, href, maybeBase) {
 }
 
 class URLSearchParams {
-  [_list];
-  [_urlObject] = null;
-
   /**
    * @param {string | [string][] | Record<string, string>} init
    */
   constructor(init = undefined) {
-    this[webidl.brand] = webidl.brand;
+    core.ops.op_url_search_params_bind(this, {__proto__: null, list: [], updateUrl: null});
     // `undefined` is the default value of an optional argument, so it means
     // "not passed". `null` is a value, and per WebIDL union resolution it
     // reaches the USVString overload as "null".
     if (init === undefined) {
-      this[_list] = [];
+      paramsState(this).list = [];
       return;
     }
 
@@ -195,7 +200,7 @@ class URLSearchParams {
           }
           ArrayPrototypePush(pairs, entry);
         }
-        this[_list] = pairs;
+        paramsState(this).list = pairs;
         return;
       }
       // Record<USVString, USVString>. We iterate own enumerable keys
@@ -223,30 +228,22 @@ class URLSearchParams {
       for (let i = 0; i < resultKeys.length; i++) {
         ArrayPrototypePush(list, [resultKeys[i], result[resultKeys[i]]]);
       }
-      this[_list] = list;
+      paramsState(this).list = list;
       return;
     }
 
     // USVString overload.
     let str = webidl.converters.USVString(init, undefined, undefined);
     if (str.length === 0) {
-      this[_list] = [];
+      paramsState(this).list = [];
       return;
     }
     if (str[0] === "?") {
       str = StringPrototypeSlice(str, 1);
     }
-    this[_list] = op_url_parse_search_params(str);
+    paramsState(this).list = op_url_parse_search_params(str);
   }
 
-  #updateUrlSearch() {
-    const url = this[_urlObject];
-    if (url === null) {
-      return;
-    }
-    // deno-lint-ignore deno-internal/prefer-primordials
-    url[_updateUrlSearch](this.toString());
-  }
 
   /**
    * @param {string} name
@@ -258,8 +255,8 @@ class URLSearchParams {
     webidl.requiredArguments(arguments.length, 2, prefix, APPEND_ARG_NAMES);
     name = webidl.converters.USVString(name, prefix, "Argument 1");
     value = webidl.converters.USVString(value, prefix, "Argument 2");
-    ArrayPrototypePush(this[_list], [name, value]);
-    this.#updateUrlSearch();
+    ArrayPrototypePush(paramsState(this).list, [name, value]);
+    updateUrlSearch(this);
   }
 
   /**
@@ -271,7 +268,7 @@ class URLSearchParams {
     const prefix = "Failed to execute 'append' on 'URLSearchParams'";
     webidl.requiredArguments(arguments.length, 1, prefix, NAME_ARG_NAMES);
     name = webidl.converters.USVString(name, prefix, "Argument 1");
-    const list = this[_list];
+    const list = paramsState(this).list;
     let writeIdx = 0;
     if (value === undefined) {
       for (let i = 0; i < list.length; i++) {
@@ -291,7 +288,7 @@ class URLSearchParams {
     if (writeIdx !== list.length) {
       ArrayPrototypeSplice(list, writeIdx);
     }
-    this.#updateUrlSearch();
+    updateUrlSearch(this);
   }
 
   /**
@@ -304,14 +301,14 @@ class URLSearchParams {
     webidl.requiredArguments(arguments.length, 1, prefix, NAME_ARG_NAMES);
     name = webidl.converters.USVString(name, prefix, "Argument 1");
     const values = [];
-    const entries = this[_list];
+    const entries = paramsState(this).list;
     for (let i = 0; i < entries.length; ++i) {
       const entry = entries[i];
       if (entry[0] === name) {
         ArrayPrototypePush(values, entry[1]);
       }
     }
-    return values;
+    return core.ops.op_url_search_params_array(this, values);
   }
 
   /**
@@ -323,7 +320,7 @@ class URLSearchParams {
     const prefix = "Failed to execute 'get' on 'URLSearchParams'";
     webidl.requiredArguments(arguments.length, 1, prefix, NAME_ARG_NAMES);
     name = webidl.converters.USVString(name, prefix, "Argument 1");
-    const entries = this[_list];
+    const entries = paramsState(this).list;
     for (let i = 0; i < entries.length; ++i) {
       const entry = entries[i];
       if (entry[0] === name) {
@@ -346,11 +343,11 @@ class URLSearchParams {
     if (value !== undefined) {
       value = webidl.converters.USVString(value, prefix, "Argument 2");
       return ArrayPrototypeSome(
-        this[_list],
+        paramsState(this).list,
         (entry) => entry[0] === name && entry[1] === value,
       );
     }
-    return ArrayPrototypeSome(this[_list], (entry) => entry[0] === name);
+    return ArrayPrototypeSome(paramsState(this).list, (entry) => entry[0] === name);
   }
 
   /**
@@ -364,7 +361,7 @@ class URLSearchParams {
     name = webidl.converters.USVString(name, prefix, "Argument 1");
     value = webidl.converters.USVString(value, prefix, "Argument 2");
 
-    const list = this[_list];
+    const list = paramsState(this).list;
 
     // If there are any name-value pairs whose name is name, in list,
     // set the value of the first such name-value pair to value
@@ -392,16 +389,16 @@ class URLSearchParams {
       ArrayPrototypeSplice(list, writeIdx);
     }
 
-    this.#updateUrlSearch();
+    updateUrlSearch(this);
   }
 
   sort() {
     webidl.assertBranded(this, URLSearchParamsPrototype, "URLSearchParams");
     ArrayPrototypeSort(
-      this[_list],
+      paramsState(this).list,
       (a, b) => (a[0] === b[0] ? 0 : a[0] > b[0] ? 1 : -1),
     );
-    this.#updateUrlSearch();
+    updateUrlSearch(this);
   }
 
   /**
@@ -409,12 +406,12 @@ class URLSearchParams {
    */
   toString() {
     webidl.assertBranded(this, URLSearchParamsPrototype, "URLSearchParams");
-    return op_url_stringify_search_params(this[_list]);
+    return op_url_stringify_search_params(paramsState(this).list);
   }
 
   get size() {
     webidl.assertBranded(this, URLSearchParamsPrototype, "URLSearchParams");
-    return this[_list].length;
+    return paramsState(this).list.length;
   }
 
   // Node exposes this as a method on URLSearchParams.prototype so that
@@ -437,7 +434,7 @@ class URLSearchParams {
     ) {
       return "[Object]";
     }
-    const entries = this[_list];
+    const entries = paramsState(this).list;
     if (entries.length === 0) return "URLSearchParams {}";
     const pairs = ArrayPrototypeMap(
       entries,
@@ -454,7 +451,8 @@ class URLSearchParams {
   }
 }
 
-webidl.mixinPairIterable("URLSearchParams", URLSearchParams, _list, 0, 1);
+webidl.registerInterfaceBrand(URLSearchParams.prototype, core.ops.op_is_url_search_params);
+webidl.mixinPairIterable("URLSearchParams", URLSearchParams, value => paramsState(value).list, 0, 1);
 
 webidl.configureInterface(URLSearchParams);
 const URLSearchParamsPrototype = URLSearchParams.prototype;
@@ -464,8 +462,6 @@ webidl.converters["URLSearchParams"] = webidl.createInterfaceConverter(
   "URLSearchParams",
   URLSearchParamsPrototype,
 );
-
-const _updateUrlSearch = Symbol("updateUrlSearch");
 
 function trim(s) {
   if (s.length === 1) return "";
@@ -712,7 +708,7 @@ class URL {
   /** @type {number} */
   #fragmentStart;
 
-  [_updateUrlSearch](value) {
+  #updateUrlSearch(value) {
     this.#serialization = opUrlReparse(
       this.#serialization,
       SET_SEARCH,
@@ -833,7 +829,7 @@ class URL {
 
   #updateSearchParams() {
     if (this.#queryObject !== null) {
-      const params = this.#queryObject[_list];
+      const params = paramsState(this.#queryObject).list;
       const newParams = op_url_parse_search_params(
         StringPrototypeSlice(this.search, 1),
       );
@@ -1193,7 +1189,7 @@ class URL {
   get searchParams() {
     if (this.#queryObject == null) {
       this.#queryObject = new URLSearchParams(this.search);
-      this.#queryObject[_urlObject] = this;
+      paramsState(this.#queryObject).updateUrl = value => this.#updateUrlSearch(value);
     }
     return this.#queryObject;
   }

@@ -6,7 +6,66 @@ use deno_core::op2;
 use deno_core::url::Url;
 use deno_core::url::form_urlencoded;
 use deno_core::url::quirks;
+use deno_core::v8;
 use deno_error::JsErrorBox;
+
+fn search_params_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
+  let name = v8::String::new(scope, "deno_web::URLSearchParams::state").unwrap();
+  v8::Private::for_api(scope, Some(name))
+}
+
+fn search_params_state<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+  value: v8::Local<v8::Value>,
+) -> Option<v8::Local<'s, v8::Object>> {
+  if value.is_proxy() {
+    return None;
+  }
+  let object: v8::Local<v8::Object> = value.try_into().ok()?;
+  let key = search_params_key(scope);
+  object.get_private(scope, key)?.try_into().ok()
+}
+
+#[op2(fast)]
+pub(crate) fn op_url_search_params_bind(
+  scope: &mut v8::PinScope,
+  object: v8::Local<v8::Object>,
+  state: v8::Local<v8::Object>,
+) {
+  let key = search_params_key(scope);
+  assert_eq!(object.set_private(scope, key, state.into()), Some(true));
+  deno_core::mark_as_unserializable_host_object(scope, object);
+}
+
+#[op2]
+pub(crate) fn op_url_search_params_data<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+  value: v8::Local<v8::Value>,
+) -> Result<v8::Local<'s, v8::Object>, JsErrorBox> {
+  search_params_state(scope, value).ok_or_else(|| JsErrorBox::type_error("Illegal invocation"))
+}
+
+#[op2(nofast)]
+pub(crate) fn op_is_url_search_params(
+  scope: &mut v8::PinScope,
+  value: v8::Local<v8::Value>,
+) -> bool {
+  search_params_state(scope, value).is_some()
+}
+
+#[op2]
+pub(crate) fn op_url_search_params_array<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+  receiver: v8::Local<'s, v8::Object>,
+  values: v8::Local<'s, v8::Array>,
+) -> v8::Local<'s, v8::Array> {
+  let values: Vec<_> = (0..values.length())
+    .map(|index| values.get_index(scope, index).unwrap())
+    .collect();
+  let context = receiver.get_creation_context(scope).unwrap();
+  let scope = &mut v8::ContextScope::new(scope, context);
+  v8::Array::new_with_elements(scope, &values)
+}
 
 /// Parse `href` with a `base_href`. Fills the out `buf` with URL components.
 #[op2(fast)]

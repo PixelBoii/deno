@@ -70,6 +70,7 @@ const {
   RegExpPrototypeTest,
   SafeRegExp,
   SafeSet,
+  SafeWeakMap,
   SetPrototypeEntries,
   SetPrototypeForEach,
   SetPrototypeKeys,
@@ -95,6 +96,8 @@ const {
   Uint32Array,
   Uint8Array,
   Uint8ClampedArray,
+  WeakMapPrototypeGet,
+  WeakMapPrototypeSet,
 } = primordials;
 
 // Shared empty options object used as the default for `opts` parameters in
@@ -1273,10 +1276,20 @@ function invokeCallbackFunction(
 }
 
 const brand = Symbol("[[webidl.brand]]");
+const interfaceBrandChecks = new SafeWeakMap();
+
+function registerInterfaceBrand(prototype, check) {
+  WeakMapPrototypeSet(interfaceBrandChecks, prototype, check);
+}
+
+function hasInterfaceBrand(value, prototype) {
+  const check = WeakMapPrototypeGet(interfaceBrandChecks, prototype);
+  return check ? check(value) : ObjectPrototypeIsPrototypeOf(prototype, value) && value[brand] === brand;
+}
 
 function createInterfaceConverter(name, prototype) {
   return (V, prefix, context, _opts) => {
-    if (!ObjectPrototypeIsPrototypeOf(prototype, V) || V[brand] !== brand) {
+    if (!hasInterfaceBrand(V, prototype)) {
       throw makeException(
         TypeError,
         `is not of type ${name}`,
@@ -1297,7 +1310,7 @@ function createBranded(Type) {
 
 function assertBranded(self, prototype, interfaceName) {
   if (
-    !ObjectPrototypeIsPrototypeOf(prototype, self) || self[brand] !== brand
+    !hasInterfaceBrand(self, prototype)
   ) {
     const message = interfaceName === undefined
       ? "Illegal invocation"
@@ -1339,6 +1352,7 @@ const _iteratorInternal = Symbol("iterator internal");
 const globalIteratorPrototype = ObjectGetPrototypeOf(ArrayIteratorPrototype);
 
 function mixinPairIterable(name, prototype, dataSymbol, keyKey, valueKey) {
+  const getValues = typeof dataSymbol === "function" ? dataSymbol : target => target[dataSymbol];
   const iteratorPrototype = ObjectCreate(globalIteratorPrototype, {
     [SymbolToStringTag]: {
       __proto__: null,
@@ -1357,7 +1371,7 @@ function mixinPairIterable(name, prototype, dataSymbol, keyKey, valueKey) {
         throw err;
       }
       const { target, kind, index } = internal;
-      const values = target[dataSymbol];
+      const values = getValues(target);
       const len = values.length;
       if (index >= len) {
         return { value: undefined, done: true };
@@ -1388,7 +1402,7 @@ function mixinPairIterable(name, prototype, dataSymbol, keyKey, valueKey) {
       const label = `${name} Iterator`;
       if (!internal) return `${label} {}`;
       const { target, kind, index } = internal;
-      const values = target[dataSymbol];
+      const values = getValues(target);
       const remaining = ArrayPrototypeSlice(values, index);
       const items = ArrayPrototypeMap(remaining, (pair) => {
         if (kind === "key") return inspect(pair[keyKey], inspectOptions);
@@ -1407,11 +1421,11 @@ function mixinPairIterable(name, prototype, dataSymbol, keyKey, valueKey) {
   });
   configurePrivateInspectors(iteratorPrototype);
   if (core.ops.op_bind_pair_iterator) {
-    core.ops.op_bind_pair_iterator(iteratorPrototype, name, keyKey, valueKey);
+    core.ops.op_bind_pair_iterator(iteratorPrototype, name, keyKey, valueKey, dataSymbol);
   }
   function createDefaultIterator(target, kind) {
     if (core.ops.op_create_pair_iterator) {
-      return core.ops.op_create_pair_iterator(iteratorPrototype, target, dataSymbol, kind);
+      return core.ops.op_create_pair_iterator(iteratorPrototype, target, kind);
     }
     const iterator = ObjectCreate(iteratorPrototype);
     ObjectDefineProperty(iterator, _iteratorInternal, {
@@ -1463,7 +1477,7 @@ function mixinPairIterable(name, prototype, dataSymbol, keyKey, valueKey) {
       // `globalThis`, and Node's test suite asserts the callback's `this`
       // is `undefined` when no `thisArg` is given.
       idlCallback = FunctionPrototypeBind(idlCallback, thisArg);
-      const pairs = this[dataSymbol];
+      const pairs = getValues(this);
       for (let i = 0; i < pairs.length; i++) {
         const entry = pairs[i];
         idlCallback(entry[valueKey], entry[keyKey], this);
@@ -1709,6 +1723,7 @@ internals.webidl = ObjectFreeze({
 
 return {
   assertBranded,
+  registerInterfaceBrand,
   AsyncSequence,
   brand,
   configureInterface,
