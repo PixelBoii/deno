@@ -27,6 +27,35 @@ use inspect::*;
 pub use preview::op_preview_entries;
 
 const DEFAULT_INDENT: &str = "  "; // Default indent string
+
+pub struct PrivateInspection;
+
+fn inspector_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
+  let name = v8::String::new(scope, "deno_web::console::platform_inspector").unwrap();
+  v8::Private::for_api(scope, Some(name))
+}
+
+fn private_inspection_enabled(scope: &mut v8::PinScope) -> bool {
+  let state = deno_core::JsRuntime::op_state_from(scope);
+  let enabled = state.borrow().has::<PrivateInspection>();
+  enabled
+}
+
+#[op2(fast)]
+pub fn op_console_private_inspection_enabled(state: &OpState) -> bool {
+  state.has::<PrivateInspection>()
+}
+
+#[op2(fast)]
+pub fn op_console_register_private_inspector(
+  scope: &mut v8::PinScope,
+  object: v8::Local<v8::Object>,
+  callback: v8::Local<v8::Function>,
+) {
+  let key = inspector_key(scope);
+  assert_eq!(object.set_private(scope, key, callback.into()), Some(true));
+}
+
 // Upper bound on repeated-indent / pre-allocation counts derived from
 // caller-controlled values, to avoid usize-saturation panics and multi-GB
 // allocations on absurd inputs.

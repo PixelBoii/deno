@@ -4,9 +4,9 @@
 
 (function () {
 const { core, primordials } = __bootstrap;
+const webidl = core.loadExtScript("ext:deno_webidl/00_webidl.js");
 const {
   Error,
-  ObjectDefineProperties,
   SafeWeakMap,
   Symbol,
   SymbolFor,
@@ -34,7 +34,7 @@ class Location {
     const url = new URL(href);
     url.username = "";
     url.password = "";
-    ObjectDefineProperties(this, {
+    webidl.definePropertiesWithPrivateInspect(this, {
       hash: {
         __proto__: null,
         get() {
@@ -217,7 +217,7 @@ class Location {
   }
 }
 
-ObjectDefineProperties(Location.prototype, {
+webidl.definePropertiesWithPrivateInspect(Location.prototype, {
   [SymbolToStringTag]: {
     __proto__: null,
     value: "Location",
@@ -239,7 +239,7 @@ class WorkerLocation {
   }
 }
 
-ObjectDefineProperties(WorkerLocation.prototype, {
+webidl.definePropertiesWithPrivateInspect(WorkerLocation.prototype, {
   hash: {
     __proto__: null,
     get() {

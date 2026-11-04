@@ -5,6 +5,13 @@ mod blob;
 mod broadcast_channel;
 mod compression;
 mod console;
+
+/// Browser embedders keep platform inspection callbacks in native private
+/// storage and do not execute Deno/Node inspection symbols supplied by pages.
+/// CLI inspection retains its default behavior unless explicitly enabled.
+pub fn enable_private_console_inspection(state: &mut deno_core::OpState) {
+  state.put(console::PrivateInspection);
+}
 mod css_stylesheet;
 mod css_value;
 mod f64;
@@ -139,6 +146,8 @@ deno_core::extension!(deno_web,
     urlpattern::op_urlpattern_process_match_input,
     console::op_preview_entries,
     console::op_console_inspect,
+    console::op_console_private_inspection_enabled,
+    console::op_console_register_private_inspector,
     console::op_console_inspect_args,
     console::op_console_format_value,
     console::op_console_quote_string,

@@ -65,6 +65,7 @@ const {
   ReflectDefineProperty,
   ReflectGetOwnPropertyDescriptor,
   ReflectHas,
+  ReflectDeleteProperty,
   ReflectOwnKeys,
   RegExpPrototypeTest,
   SafeRegExp,
@@ -1402,6 +1403,7 @@ function mixinPairIterable(name, prototype, dataSymbol, keyKey, valueKey) {
       return oneLine;
     },
   });
+  configurePrivateInspectors(iteratorPrototype);
   function createDefaultIterator(target, kind) {
     const iterator = ObjectCreate(iteratorPrototype);
     ObjectDefineProperty(iterator, _iteratorInternal, {
@@ -1501,6 +1503,37 @@ function mixinPairIterable(name, prototype, dataSymbol, keyKey, valueKey) {
   return ObjectDefineProperties(prototype.prototype, properties);
 }
 
+const privateInspectSymbol = SymbolFor("Deno.privateCustomInspect");
+const customInspectSymbol = SymbolFor("Deno.customInspect");
+const nodeInspectSymbol = SymbolFor("nodejs.util.inspect.custom");
+
+function definePrivateInspect(object, descriptor) {
+  if (core.ops.op_console_private_inspection_enabled?.()) {
+    core.ops.op_console_register_private_inspector(object, descriptor.value);
+  } else {
+    ObjectDefineProperty(object, privateInspectSymbol, descriptor);
+  }
+}
+
+function definePropertiesWithPrivateInspect(object, descriptors) {
+  if (core.ops.op_console_private_inspection_enabled?.() && ObjectHasOwn(descriptors, privateInspectSymbol)) {
+    core.ops.op_console_register_private_inspector(object, descriptors[privateInspectSymbol].value);
+    ReflectDeleteProperty(descriptors, privateInspectSymbol);
+  }
+  return ObjectDefineProperties(object, descriptors);
+}
+
+function configurePrivateInspectors(object) {
+  if (!core.ops.op_console_private_inspection_enabled?.()) return;
+  const descriptor = ObjectGetOwnPropertyDescriptor(object, privateInspectSymbol) ??
+    ObjectGetOwnPropertyDescriptor(object, customInspectSymbol);
+  if (typeof descriptor?.value !== "function") return;
+  core.ops.op_console_register_private_inspector(object, descriptor.value);
+  for (const key of [privateInspectSymbol, customInspectSymbol, nodeInspectSymbol]) {
+    if (!ReflectDeleteProperty(object, key)) throw new TypeError("Platform inspector must be registered privately before exposure: " + object?.constructor?.name + " " + String(key));
+  }
+}
+
 function configureInterface(interface_) {
   configureProperties(interface_);
   configureProperties(interface_.prototype);
@@ -1514,6 +1547,7 @@ function configureInterface(interface_) {
 }
 
 function configureProperties(obj) {
+  configurePrivateInspectors(obj);
   const descriptors = ObjectGetOwnPropertyDescriptors(obj);
   for (const key in descriptors) {
     if (!ObjectHasOwn(descriptors, key)) {
@@ -1670,6 +1704,9 @@ return {
   AsyncSequence,
   brand,
   configureInterface,
+  configurePrivateInspectors,
+  definePrivateInspect,
+  definePropertiesWithPrivateInspect,
   converters,
   createAsyncSequenceConverter,
   createBranded,

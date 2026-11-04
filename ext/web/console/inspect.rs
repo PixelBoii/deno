@@ -674,6 +674,34 @@ pub fn format_value<'s, 'i>(
 }
 
 /// Returns `Ok(Some(string))` when a custom-inspect hook produced output.
+fn call_deno_inspector<'s, 'i>(
+  scope: &mut v8::PinScope<'s, 'i>,
+  intr: &Intrinsics<'_>,
+  ctx: &mut Ctx<'s>,
+  value: v8::Local<'s, v8::Value>,
+  func: v8::Local<'s, v8::Function>,
+) -> R<Option<String>> {
+  // return String(value[customInspect](inspect, ctx));
+  let ctx_obj = materialize_ctx(scope, intr, ctx)?;
+  let inspect_fn = intr.inspect_fn(scope);
+  let ret =
+    js_call(scope, func, value, &[inspect_fn.into(), ctx_obj.into()])?;
+  // Read back state the hook may have changed through nested
+  // `inspect(..., ctx)` calls (seen/circular are shared in JS).
+  readback_ctx(scope, ctx, ctx_obj);
+  let s = {
+    v8::tc_scope!(tc, scope);
+    match ret.to_string(tc) {
+      Some(s) => s.to_rust_string_lossy(tc),
+      None => {
+        let exc = tc.exception();
+        return Err(grab_err(tc, exc));
+      }
+    }
+  };
+  return Ok(Some(s));
+}
+
 fn try_custom_inspect<'s, 'i>(
   scope: &mut v8::PinScope<'s, 'i>,
   intr: &Intrinsics<'_>,
@@ -696,6 +724,24 @@ fn try_custom_inspect<'s, 'i>(
     return Ok(None);
   };
 
+  if super::private_inspection_enabled(scope) {
+    // Inspect proxies through the native proxy formatter, without invoking
+    // page traps or handing the proxy to a platform brand-sensitive callback.
+    if proxy_details.is_some() {return Ok(None);}
+    let key = super::inspector_key(scope);
+    let mut object = inspect_target_obj;
+    loop {
+      if object.is_proxy() {return Ok(None);}
+      if let Some(callback) = object.get_private(scope, key)
+        .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok()) {
+        return call_deno_inspector(scope, intr, ctx, value, callback);
+      }
+      let Some(parent) = object.get_prototype(scope)
+        .and_then(|value| v8::Local::<v8::Object>::try_from(value).ok()) else {return Ok(None);};
+      object = parent;
+    }
+  }
+
   let custom_inspect = symbol_for(scope, "Deno.customInspect");
   let private_custom_inspect = symbol_for(scope, "Deno.privateCustomInspect");
 
@@ -710,25 +756,7 @@ fn try_custom_inspect<'s, 'i>(
     if has {
       let func = js_get(scope, inspect_target_obj, sym.into())?;
       if let Ok(func) = v8::Local::<v8::Function>::try_from(func) {
-        // return String(value[customInspect](inspect, ctx));
-        let ctx_obj = materialize_ctx(scope, intr, ctx)?;
-        let inspect_fn = intr.inspect_fn(scope);
-        let ret =
-          js_call(scope, func, value, &[inspect_fn.into(), ctx_obj.into()])?;
-        // Read back state the hook may have changed through nested
-        // `inspect(..., ctx)` calls (seen/circular are shared in JS).
-        readback_ctx(scope, ctx, ctx_obj);
-        let s = {
-          v8::tc_scope!(tc, scope);
-          match ret.to_string(tc) {
-            Some(s) => s.to_rust_string_lossy(tc),
-            None => {
-              let exc = tc.exception();
-              return Err(grab_err(tc, exc));
-            }
-          }
-        };
-        return Ok(Some(s));
+        return call_deno_inspector(scope, intr, ctx, value, func);
       }
     }
   }
