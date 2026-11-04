@@ -693,6 +693,9 @@ pub fn format_error<'s, 'i>(
   tag: &str,
   keys: &mut Vec<v8::Local<'s, v8::Value>>,
 ) -> R<String> {
+  if super::private_inspection_enabled(scope) {
+    return Ok(super::native_error::format(scope, err));
+  }
   let mut stack = match get_stack_string(scope, intr, ctx, err) {
     Ok(s) => s,
     Err(_) => return Ok(object_proto_to_string(scope, err.into())),

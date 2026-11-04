@@ -9,6 +9,7 @@
 mod css;
 mod error_fmt;
 mod inspect;
+mod native_error;
 mod preview;
 mod quote;
 mod table;

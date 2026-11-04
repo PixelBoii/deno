@@ -58,6 +58,17 @@ fn platform_inspection_preserves_cli_hooks_and_private_callbacks() {
       }});
       assert(consoleInspection.inspect(defined) === 'Defined actual=19');
       assert(Object.hasOwn(defined, key) === !native);
+      let stackReads = 0;
+      function actualErrorCreator() {{return new Error('captured native message');}}
+      const error = actualErrorCreator();
+      Object.defineProperty(error, 'stack', {{get() {{stackReads++; return 'CLI supplied stack';}}}});
+      const displayed = consoleInspection.inspect(error);
+      assert(stackReads === (native ? 0 : 1));
+      if (native) {{
+        assert(displayed.includes('captured native message'));
+        assert(displayed.includes('actualErrorCreator'));
+        assert(displayed.includes('file:///console-inspection-test.js'));
+      }} else {{assert(displayed.includes('CLI supplied stack'));}}
       if (!native) {{
         const descriptor = Object.getOwnPropertyDescriptor(defined, key);
         assert(!descriptor.writable && !descriptor.configurable);
