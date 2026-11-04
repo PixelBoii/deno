@@ -592,6 +592,11 @@ pub struct JsRuntimeState {
 
 #[derive(Default)]
 pub struct RuntimeOptions {
+  /// Keep V8's intrinsic Error stack formatting and CallSite objects.
+  /// By default Deno installs a formatter that applies source maps and converts
+  /// file URLs into local paths. Browser embedders can retain native semantics.
+  pub use_native_error_stacks: bool,
+
   /// Implementation of `ModuleLoader` which will be
   /// called when V8 requests to load ES modules in the main realm.
   ///
@@ -1369,6 +1374,7 @@ impl JsRuntime {
     let _phase = startup_phase_begin();
     let mut isolate = setup::create_isolate(
       will_snapshot,
+      options.use_native_error_stacks,
       options.create_params.take(),
       maybe_startup_snapshot,
       external_references.into(),

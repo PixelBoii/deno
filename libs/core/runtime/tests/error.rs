@@ -9,6 +9,45 @@ use crate::JsRuntime;
 use crate::RuntimeOptions;
 use crate::op2;
 
+#[test]
+fn native_error_stacks_option() {
+  for use_native_error_stacks in [false, true] {
+    let mut runtime = JsRuntime::new(RuntimeOptions {
+      use_native_error_stacks,
+      ..Default::default()
+    });
+    let expected = if use_native_error_stacks {
+      "file:///tmp/deno-native-stack.js"
+    } else {
+      "/tmp/deno-native-stack.js"
+    };
+    runtime.execute_script(
+      "file:///tmp/deno-native-stack.js",
+      format!(r#"
+        Error.prepareStackTrace = (_error, sites) => sites;
+        const site = new Error().stack[0];
+        if (site.getFileName() !== {expected:?}) throw new Error('CallSite URL');
+        if ((typeof site.getPosition === 'function') !== {use_native_error_stacks}) {{
+          throw new Error('native CallSite methods');
+        }}
+        delete Error.prepareStackTrace;
+      "#),
+    ).unwrap();
+    let error = runtime
+      .execute_script(
+        "file:///tmp/deno-native-stack.js",
+        "throw new Error('reported error')",
+      )
+      .unwrap_err();
+    assert_eq!(error.message.as_deref(), Some("reported error"));
+    assert!(!error.frames.is_empty());
+    assert_eq!(
+      error.frames[0].file_name.as_deref(),
+      Some("file:///tmp/deno-native-stack.js")
+    );
+  }
+}
+
 #[tokio::test]
 async fn test_error_builder() {
   #[op2(fast)]

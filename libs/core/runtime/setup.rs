@@ -245,6 +245,7 @@ pub fn init_v8(
 
 pub fn create_isolate(
   will_snapshot: bool,
+  use_native_error_stacks: bool,
   maybe_create_params: Option<v8::CreateParams>,
   maybe_startup_snapshot: Option<V8Snapshot>,
   external_refs: Cow<'static, [v8::ExternalReference]>,
@@ -284,9 +285,11 @@ pub fn create_isolate(
   isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
   isolate.set_capture_stack_trace_for_uncaught_exceptions(true, 10);
   isolate.set_promise_reject_callback(bindings::promise_reject_callback);
-  isolate.set_prepare_stack_trace_callback(
-    crate::error::prepare_stack_trace_callback,
-  );
+  if !use_native_error_stacks {
+    isolate.set_prepare_stack_trace_callback(
+      crate::error::prepare_stack_trace_callback,
+    );
+  }
   isolate.set_host_initialize_import_meta_object_callback(
     bindings::host_initialize_import_meta_object_callback,
   );
