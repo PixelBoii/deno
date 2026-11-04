@@ -123,6 +123,8 @@ builtin_ops! {
   ops_builtin_v8::op_mark_host_interface,
   ops_builtin_v8::op_has_host_interface,
   ops_builtin_v8::op_host_interface_data,
+  ops_builtin_v8::op_set_host_object_tag,
+  ops_builtin_v8::op_get_host_object_tag,
   ops_builtin_v8::op_eval_context,
   ops_builtin_v8::op_encode,
   ops_builtin_v8::op_decode,

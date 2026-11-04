@@ -6039,13 +6039,13 @@ class ReadableStream {
   /** @type {Deferred<void>} */
   [_isClosedPromise];
 
-  [core.hostObjectBrand] = "ReadableStream";
 
   /**
    * @param {UnderlyingSource<R>=} underlyingSource
    * @param {QueuingStrategy<R>=} strategy
    */
   constructor(underlyingSource = undefined, strategy = undefined) {
+    core.setHostObjectTag(this, "ReadableStream");
     if (underlyingSource === _brand) {
       this[_brand] = _brand;
       return;
@@ -7144,7 +7144,6 @@ class TransformStream {
   /** @type {WritableStream<I>} */
   [_writable];
 
-  [core.hostObjectBrand] = "TransformStream";
 
   /**
    * @param {Transformer<I, O>} transformer
@@ -7156,6 +7155,7 @@ class TransformStream {
     writableStrategy = { __proto__: null },
     readableStrategy = { __proto__: null },
   ) {
+    core.setHostObjectTag(this, "TransformStream");
     if (transformer === _brand) {
       this[_brand] = _brand;
       return;
@@ -7364,13 +7364,13 @@ class WritableStream {
   /** @type {Deferred<void>[]} */
   [_writeRequests];
 
-  [core.hostObjectBrand] = "WritableStream";
 
   /**
    * @param {UnderlyingSink<W>=} underlyingSink
    * @param {QueuingStrategy<W>=} strategy
    */
   constructor(underlyingSink = undefined, strategy = undefined) {
+    core.setHostObjectTag(this, "WritableStream");
     if (underlyingSink === _brand) {
       this[_brand] = _brand;
       return;

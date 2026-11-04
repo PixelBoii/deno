@@ -96,7 +96,9 @@ export namespace core {
    */
   function markHostInterface(object: object, name: string): void;
   function hasHostInterface(value: unknown, name: string): boolean;
-  function hostInterfaceData(value: unknown, name: string): Record<string, any> | undefined;
+  function hostInterfaceData(value: unknown, name: string): Record<string, any> | null;
+  function setHostObjectTag(object: object, tag: string | Function): void;
+  function getHostObjectTag(value: unknown): string | Function | null;
 
   /**
    * Retrieve a list of all open resources, in the form of a map that maps

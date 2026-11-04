@@ -468,6 +468,7 @@ class RecordableHistogram extends Histogram {
   constructor(handle, cloneId) {
     super(handle);
     this[_cloneId] = cloneId;
+    core.setHostObjectTag(this, this.#serialize);
   }
 
   record(val) {
@@ -506,7 +507,7 @@ class RecordableHistogram extends Histogram {
     this[_handle].add(other[_handle]);
   }
 
-  [core.hostObjectBrand]() {
+  #serialize() {
     return {
       type: "RecordableHistogram",
       id: getHistogramCloneId(this),
@@ -517,6 +518,7 @@ class RecordableHistogram extends Histogram {
 class EventLoopDelayHistogram extends Histogram {
   constructor(handle) {
     super(handle);
+    core.setHostObjectTag(this, this.#serialize);
   }
 
   enable() {
@@ -531,7 +533,7 @@ class EventLoopDelayHistogram extends Histogram {
     this.disable();
   }
 
-  [core.hostObjectBrand]() {
+  #serialize() {
     return {
       type: "EventLoopDelayHistogram",
       count: this.count,

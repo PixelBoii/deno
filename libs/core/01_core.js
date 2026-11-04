@@ -21,7 +21,6 @@
     SafeWeakMap,
     StringPrototypeSlice,
     Symbol,
-    SymbolFor,
     TypedArrayPrototypeGetLength,
     TypedArrayPrototypeJoin,
     TypedArrayPrototypeSlice,
@@ -52,6 +51,8 @@
     op_mark_host_interface,
     op_has_host_interface,
     op_host_interface_data,
+    op_set_host_object_tag,
+    op_get_host_object_tag,
     op_decode,
     op_deserialize,
     op_destructure_error,
@@ -725,7 +726,6 @@
     return { fileName, lineNumber, columnNumber };
   }
 
-  const hostObjectBrand = SymbolFor("Deno.core.hostObject");
   const transferableResources = {};
   const registerTransferableResource = (name, send, receive) => {
     if (transferableResources[name]) {
@@ -1192,7 +1192,8 @@
       }
       return [result, null];
     },
-    hostObjectBrand,
+    setHostObjectTag: op_set_host_object_tag,
+    getHostObjectTag: op_get_host_object_tag,
     registerTransferableResource,
     getTransferableResource,
     registerCloneableResource,

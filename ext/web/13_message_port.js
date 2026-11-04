@@ -176,7 +176,7 @@ function takeMessagePortId(port) {
  */
 function createMessagePort(id) {
   const port = webidl.createBranded(MessagePort);
-  port[core.hostObjectBrand] = "MessagePort";
+  core.setHostObjectTag(port, "MessagePort");
   setEventTargetData(port);
   setMessagePortId(port, id);
   port[_enabled] = false;
@@ -931,10 +931,15 @@ function serializeJsMessageData(data, transferables) {
       }
       j++;
       ArrayPrototypePush(transferredArrayBuffers, t);
-    } else if (t[core.hostObjectBrand]) {
-      ArrayPrototypePush(hostObjects, t);
     } else {
-      throw new DOMException("Value is not transferable", "DataCloneError");
+      const type = core.getHostObjectTag(t);
+      const resource = typeof type === "string"
+        ? core.getTransferableResource(type)
+        : null;
+      if (!resource || typeof resource.send !== "function") {
+        throw new DOMException("Value is not transferable", "DataCloneError");
+      }
+      ArrayPrototypePush(hostObjects, t);
     }
   }
 
@@ -951,8 +956,8 @@ function serializeJsMessageData(data, transferables) {
   let arrayBufferI = 0;
   for (let i = 0; i < transferables.length; ++i) {
     const transferable = transferables[i];
-    if (transferable[core.hostObjectBrand]) {
-      const type = transferable[core.hostObjectBrand];
+    const type = core.getHostObjectTag(transferable);
+    if (typeof type === "string") {
       const rid = core.getTransferableResource(type).send(transferable);
       if (typeof rid === "number") {
         ArrayPrototypePush(serializedTransferables, {

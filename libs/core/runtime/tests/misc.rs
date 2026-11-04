@@ -2454,7 +2454,7 @@ fn test_native_wrappers_require_serialization_support() {
     const copied=Object.create(Object.getPrototypeOf(nativeObject));
     check(Deno.core.deserialize(Deno.core.serialize(copied)) instanceof Object);
     // Native objects with a serializer retain their existing serialization path.
-    nativeObject[Symbol.for('Deno.core.hostObject')]=()=>({value:23});
+    Deno.core.setHostObjectTag(nativeObject,()=>({value:23}));
     check(Deno.core.serialize(nativeObject) instanceof Uint8Array);
   "#).unwrap();
 }
@@ -2562,9 +2562,8 @@ fn test_private_unserializable_host_object() {
     const brand = Symbol.for('Deno.core.hostObject');
     const legacy = {[brand]() { return {value: 9}; }};
     assert(Deno.core.serialize(legacy) instanceof Uint8Array);
-    hostObject[brand] = () => ({value: 9});
+    Deno.core.setHostObjectTag(hostObject, () => ({value: 9}));
     assert(rejected(hostObject));
-    delete hostObject[brand];
     Object.freeze(hostObject);
     assert(rejected(hostObject));
   "#).unwrap();

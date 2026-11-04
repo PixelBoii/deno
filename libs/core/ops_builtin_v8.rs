@@ -56,6 +56,41 @@ fn host_interface_key<'s>(
   v8::Private::for_api(scope, Some(name))
 }
 
+fn host_object_tag_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
+  let name = v8_static_strings::HOST_OBJECT.v8_string(scope).unwrap();
+  v8::Private::for_api(scope, Some(name))
+}
+
+// Exception construction can call these primitives while another op finishes.
+// They only access V8 private data: no OpState borrows or JavaScript callbacks.
+#[op2(fast, reentrant)]
+pub fn op_set_host_object_tag(
+  scope: &mut v8::PinScope,
+  object: v8::Local<v8::Object>,
+  tag: v8::Local<v8::Value>,
+) -> Result<(), JsErrorBox> {
+  if object.is_proxy() || (!tag.is_string() && !tag.is_function()) {
+    return Err(JsErrorBox::type_error("Host serialization requires an ordinary object and a transfer type or serializer"));
+  }
+  let key = host_object_tag_key(scope);
+  if object.set_private(scope, key, tag) != Some(true) {
+    return Err(JsErrorBox::type_error("Could not register host object serialization"));
+  }
+  Ok(())
+}
+
+#[op2(reentrant)]
+pub fn op_get_host_object_tag<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+  value: v8::Local<'s, v8::Value>,
+) -> Option<v8::Local<'s, v8::Value>> {
+  if value.is_proxy() { return None; }
+  let object = value.try_cast::<v8::Object>().ok()?;
+  let key = host_object_tag_key(scope);
+  if object.has_private(scope, key) != Some(true) { return None; }
+  object.get_private(scope, key)
+}
+
 #[op2(fast)]
 pub fn op_mark_host_interface(
   scope: &mut v8::PinScope,
@@ -918,7 +953,7 @@ struct SerializeDeserialize<'a> {
   host_objects: Option<v8::Local<'a, v8::Array>>,
   error_callback: Option<v8::Local<'a, v8::Function>>,
   for_storage: bool,
-  host_object_brand: Option<v8::Local<'a, v8::Symbol>>,
+  host_object_tag: Option<v8::Local<'a, v8::Private>>,
   deserializers: Option<v8::Local<'a, v8::Object>>,
   // Out-of-band `SharedArrayBuffer` transfer used by `BroadcastChannel`. Unlike
   // the shared `SharedArrayBufferStore` (which hands an id to a single taker),
@@ -1025,9 +1060,9 @@ impl v8::ValueSerializerImpl for SerializeDeserialize<'_> {
     }
     // A native wrapper's backing state cannot be copied as ordinary properties.
     // Custom serializers below can still opt a supported native type in.
-    match self.host_object_brand {
-      Some(symbol) => object
-        .has(scope, symbol.into())
+    match self.host_object_tag {
+      Some(key) => object
+        .has_private(scope, key)
         .map(|custom| custom || object.is_api_wrapper()),
       _ => Some(object.is_api_wrapper()),
     }
@@ -1045,8 +1080,8 @@ impl v8::ValueSerializerImpl for SerializeDeserialize<'_> {
       self.throw_data_clone_error(scope, message);
       return None;
     }
-    if let Some(host_object_brand) = self.host_object_brand {
-      let value = object.get(scope, host_object_brand.into())?;
+    if let Some(host_object_tag) = self.host_object_tag {
+      let value = object.get_private(scope, host_object_tag)?;
       if let Ok(func) = value.try_cast::<v8::Function>() {
         let result = func.call(scope, object.into(), &[])?;
         value_serializer.write_uint32(u32::MAX);
@@ -1196,14 +1231,14 @@ pub fn op_serialize<'s, 'i>(
   };
 
   let key = v8_static_strings::HOST_OBJECT.v8_string(scope).unwrap();
-  let symbol = v8::Symbol::for_key(scope, key);
-  let host_object_brand = Some(symbol);
+  let symbol = v8::Private::for_api(scope, Some(key));
+  let host_object_tag = Some(symbol);
 
   let serialize_deserialize = Box::new(SerializeDeserialize {
     host_objects,
     error_callback,
     for_storage,
-    host_object_brand,
+    host_object_tag,
     deserializers: None,
     broadcast_shared_array_buffers: None,
   });
@@ -1309,14 +1344,14 @@ pub fn op_deserialize<'s, 'i>(
   };
 
   let key = v8_static_strings::HOST_OBJECT.v8_string(scope).unwrap();
-  let symbol = v8::Symbol::for_key(scope, key);
-  let host_object_brand = Some(symbol);
+  let symbol = v8::Private::for_api(scope, Some(key));
+  let host_object_tag = Some(symbol);
 
   let serialize_deserialize = Box::new(SerializeDeserialize {
     host_objects,
     error_callback: None,
     for_storage,
-    host_object_brand,
+    host_object_tag,
     deserializers,
     broadcast_shared_array_buffers: None,
   });
@@ -1380,14 +1415,14 @@ pub fn serialize_broadcast<'s, 'i>(
   error_callback: Option<v8::Local<'s, v8::Function>>,
 ) -> Result<(Vec<u8>, Vec<BroadcastSharedArrayBuffer>), JsErrorBox> {
   let key = v8_static_strings::HOST_OBJECT.v8_string(scope).unwrap();
-  let symbol = v8::Symbol::for_key(scope, key);
+  let symbol = v8::Private::for_api(scope, Some(key));
   let broadcast = Rc::new(RefCell::new(Vec::new()));
 
   let serialize_deserialize = Box::new(SerializeDeserialize {
     host_objects: None,
     error_callback,
     for_storage: false,
-    host_object_brand: Some(symbol),
+    host_object_tag: Some(symbol),
     deserializers: None,
     broadcast_shared_array_buffers: Some(broadcast.clone()),
   });
@@ -1424,13 +1459,13 @@ pub fn deserialize_broadcast<'s, 'i>(
   deserializers: Option<v8::Local<'s, v8::Object>>,
 ) -> Result<v8::Local<'s, v8::Value>, JsErrorBox> {
   let key = v8_static_strings::HOST_OBJECT.v8_string(scope).unwrap();
-  let symbol = v8::Symbol::for_key(scope, key);
+  let symbol = v8::Private::for_api(scope, Some(key));
 
   let serialize_deserialize = Box::new(SerializeDeserialize {
     host_objects: None,
     error_callback: None,
     for_storage: false,
-    host_object_brand: Some(symbol),
+    host_object_tag: Some(symbol),
     deserializers,
     broadcast_shared_array_buffers: Some(Rc::new(RefCell::new(
       shared_array_buffers,
@@ -1460,14 +1495,14 @@ pub fn op_structured_clone<'s, 'i>(
   deserializers: Option<v8::Local<'s, v8::Object>>,
 ) -> Result<v8::Local<'s, v8::Value>, JsErrorBox> {
   let key = v8_static_strings::HOST_OBJECT.v8_string(scope).unwrap();
-  let symbol = v8::Symbol::for_key(scope, key);
-  let host_object_brand = Some(symbol);
+  let symbol = v8::Private::for_api(scope, Some(key));
+  let host_object_tag = Some(symbol);
 
   let serialize_deserialize = Box::new(SerializeDeserialize {
     host_objects: None,
     error_callback: None,
     for_storage: false,
-    host_object_brand,
+    host_object_tag,
     deserializers: None,
     broadcast_shared_array_buffers: None,
   });
@@ -1494,7 +1529,7 @@ pub fn op_structured_clone<'s, 'i>(
     host_objects: None,
     error_callback: None,
     for_storage: false,
-    host_object_brand,
+    host_object_tag,
     deserializers,
     broadcast_shared_array_buffers: None,
   });

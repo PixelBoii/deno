@@ -304,6 +304,7 @@ class Blob {
     blobBacking(this).size = size;
     blobBacking(this).type = normalizeType(options.type);
     blobBacking(this).fileBacked = hasFileBackedPart(parts);
+    core.setHostObjectTag(this, serializeBlobResource);
   }
 
   /** @returns {number} */
@@ -581,6 +582,7 @@ class File extends Blob {
       /** @type {number} */
       fileData(this).lastModified = options.lastModified;
     }
+    core.setHostObjectTag(this, serializeFileResource);
   }
 
   /** @returns {string} */
@@ -733,20 +735,14 @@ function cloneBlobParts(blob) {
   return cloned;
 }
 
-ObjectDefineProperty(Blob.prototype, core.hostObjectBrand, {
-  __proto__: null,
-  value: function () {
-    return {
-      type: "Blob",
-      mimeType: blobBacking(this).type,
-      parts: cloneBlobParts(this),
-      size: blobBacking(this).size,
-    };
-  },
-  enumerable: false,
-  configurable: false,
-  writable: false,
-});
+function serializeBlobResource() {
+  return {
+    type: "Blob",
+    mimeType: blobBacking(this).type,
+    parts: cloneBlobParts(this),
+    size: blobBacking(this).size,
+  };
+}
 
 core.registerCloneableResource("Blob", (data) => {
   const parts = [];
@@ -773,22 +769,16 @@ function markFileBackedBlob(blob) {
   return blob;
 }
 
-ObjectDefineProperty(File.prototype, core.hostObjectBrand, {
-  __proto__: null,
-  value: function () {
-    return {
-      type: "File",
-      mimeType: blobBacking(this).type,
-      parts: cloneBlobParts(this),
-      size: blobBacking(this).size,
-      name: fileData(this).name,
-      lastModified: fileData(this).lastModified,
-    };
-  },
-  enumerable: false,
-  configurable: false,
-  writable: false,
-});
+function serializeFileResource() {
+  return {
+    type: "File",
+    mimeType: blobBacking(this).type,
+    parts: cloneBlobParts(this),
+    size: blobBacking(this).size,
+    name: fileData(this).name,
+    lastModified: fileData(this).lastModified,
+  };
+}
 
 core.registerCloneableResource("File", (data) => {
   const parts = [];

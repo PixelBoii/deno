@@ -718,6 +718,7 @@ function prepareSecretKey(
 class SecretKeyObject extends KeyObject {
   constructor(handle: any) {
     super("secret", handle);
+    core.setHostObjectTag(this, this.#serialize);
   }
 
   get symmetricKeySize() {
@@ -728,7 +729,7 @@ class SecretKeyObject extends KeyObject {
     return undefined;
   }
 
-  [core.hostObjectBrand]() {
+  #serialize() {
     return {
       type: "NodeCryptoKeyObject",
       keyType: "secret",
@@ -880,9 +881,10 @@ class AsymmetricKeyObject extends KeyObject {
 class PrivateKeyObject extends AsymmetricKeyObject {
   constructor(handle: any) {
     super("private", handle);
+    core.setHostObjectTag(this, this.#serialize);
   }
 
-  [core.hostObjectBrand]() {
+  #serialize() {
     return {
       type: "NodeCryptoKeyObject",
       keyType: "private",
@@ -968,9 +970,10 @@ class PrivateKeyObject extends AsymmetricKeyObject {
 class PublicKeyObject extends AsymmetricKeyObject {
   constructor(handle: any) {
     super("public", handle);
+    core.setHostObjectTag(this, this.#serialize);
   }
 
-  [core.hostObjectBrand]() {
+  #serialize() {
     return {
       type: "NodeCryptoKeyObject",
       keyType: "public",

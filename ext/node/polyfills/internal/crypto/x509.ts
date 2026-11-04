@@ -121,10 +121,10 @@ class X509Certificate {
     this.#handle = op_node_x509_parse(buffer);
     // deno-lint-ignore no-this-alias
     const self = this;
-    this[core.hostObjectBrand] = () => ({
+    core.setHostObjectTag(this, () => ({
       type: "X509Certificate",
       data: op_node_x509_get_raw(self.#handle),
-    });
+    }));
   }
 
   [kInspect](depth: number, options: any) {

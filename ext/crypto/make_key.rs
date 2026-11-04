@@ -5,7 +5,7 @@
 //! Builds a `CryptoKey` cppgc instance plus the `{ cppgc: CryptoKeyHandle }`
 //! handle wrapper object, the algorithm dictionary object, and the frozen
 //! `usages` array, and stamps the `webidl.brand` / `kKeyObject` /
-//! `hostObjectBrand` symbols the same way the legacy JS `constructKey()`
+//! private serialization registration used by the JS `constructKey()`
 //! helper did. Used by every `SubtleCrypto` method (import/generate/derive
 //! /wrap/unwrap/encapsulate/decapsulate/getPublicKey) now that those bodies
 //! live in Rust.
@@ -20,21 +20,17 @@ use crate::crypto_key::CryptoKeyType;
 use crate::key_store::CryptoKeyHandle;
 use crate::shared::RawKeyData;
 
-/// Process-wide cache of the per-isolate symbols the JS `constructKey()`
-/// helper used to stamp onto every `CryptoKey`. Populated on the first call
-/// to [`stamp_symbols`]; reused on every subsequent call. These are
-/// `Symbol.for(...)`-style well-known symbols (or, for `webidl.brand`,
-/// fetched once from the loaded webidl ESM), so caching as `Global<Symbol>`
-/// is safe across isolates because they always resolve to the same symbol
-/// identity per isolate.
+/// Per-isolate cache of the key's compatibility brands and its private
+/// structured serialization key. Initialized with the crypto module and reused
+/// by genuine key construction within that isolate.
 pub struct CryptoSymbols {
   pub webidl_brand: v8::Global<v8::Symbol>,
   pub k_key_object: v8::Global<v8::Symbol>,
-  pub host_object_brand: v8::Global<v8::Symbol>,
+  pub host_object_tag: v8::Global<v8::Private>,
 }
 
 thread_local! {
-  // Owned (not `Box::leak`ed) so the three `v8::Global<v8::Symbol>` get
+  // Owned (not `Box::leak`ed) so the brand and private-key handles get
   // dropped when the thread exits, releasing the V8 globals before isolate
   // teardown.  Each worker (= each isolate = each thread) has its own
   // instance.
@@ -241,7 +237,7 @@ fn stamp_symbols<'s>(
       (
         syms.webidl_brand.clone(),
         syms.k_key_object.clone(),
-        syms.host_object_brand.clone(),
+        syms.host_object_tag.clone(),
       )
     })
   else {
@@ -270,22 +266,13 @@ fn stamp_symbols<'s>(
     v8::PropertyAttribute::DONT_ENUM,
   );
 
-  // The hostObjectBrand is a function-valued property that the
-  // structured-clone serializer calls; replicate the legacy JS shape.
-  // The legacy JS used `ObjectDefineProperty(key, hostObjectBrand, { value:
-  // () => snapshot })` -- a closure-bound function. From Rust the same
-  // shape is built via a FunctionTemplate whose `data` slot carries the
-  // snapshot and whose body returns it.
+  // Register the real key's clone snapshot callback privately. Script symbols
+  // cannot replace the codec or expose its internal key metadata.
   let ft = v8::FunctionTemplate::builder(host_object_thunk)
     .data(host_object_snapshot)
     .build(scope);
   let host_fn = ft.get_function(scope).unwrap();
-  let _ = key.define_own_property(
-    scope,
-    host_brand_sym.into(),
-    host_fn.into(),
-    v8::PropertyAttribute::DONT_ENUM,
-  );
+  let _ = key.set_private(scope, host_brand_sym, host_fn.into());
 }
 
 fn host_object_thunk(
@@ -459,12 +446,12 @@ pub fn register_symbols<'s>(
   };
   let host_obj = {
     let name = v8::String::new(scope, "Deno.core.hostObject").unwrap();
-    v8::Symbol::for_key(scope, name)
+    v8::Private::for_api(scope, Some(name))
   };
   set_symbols(CryptoSymbols {
     webidl_brand: v8::Global::new(scope, webidl_brand),
     k_key_object: v8::Global::new(scope, k_key_object),
-    host_object_brand: v8::Global::new(scope, host_obj),
+    host_object_tag: v8::Global::new(scope, host_obj),
   });
   true
 }
