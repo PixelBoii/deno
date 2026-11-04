@@ -11,6 +11,7 @@ mod f64;
 mod geometry;
 mod image_data;
 mod message_port;
+mod performance_state;
 mod stream_resource;
 mod timers;
 mod url;
@@ -104,6 +105,10 @@ deno_core::extension!(deno_web,
     compression::op_compression_write,
     compression::op_compression_finish,
     op_now,
+    performance_state::op_performance_object_bind,
+    performance_state::op_performance_object_data,
+    performance_state::op_performance_observer_register_factory,
+    performance_state::op_performance_observer_callback_factory,
     op_time_origin,
     op_defer,
     geometry::op_geometry_get_enable_css_parser_features,

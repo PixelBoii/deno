@@ -33,6 +33,16 @@ fn performance_timeline_defaults_and_observer_order() {
     assert(Observer.supportedEntryTypes.join() === 'mark,measure');
     assert(Object.isFrozen(Observer.supportedEntryTypes));
     const observer = new Observer(() => { throw new Error('queue was drained') });
+    const forged = Object.create(Observer.prototype);
+    for (const key of Reflect.ownKeys(observer)) Object.defineProperty(forged, key, Object.getOwnPropertyDescriptor(observer, key));
+    let rejected = false;
+    try { Observer.prototype.observe.call(forged, {type: 'mark'}); } catch(error) { rejected = error instanceof TypeError; }
+    assert(rejected && Reflect.ownKeys(observer).length === 0);
+    const prototype = Object.getPrototypeOf(observer);
+    Object.setPrototypeOf(observer, null);
+    Observer.prototype.observe.call(observer, {type: 'mark'});
+    Observer.prototype.disconnect.call(observer);
+    Object.setPrototypeOf(observer, prototype);
     observer.observe({type: 'mark'});
     observer.observe({type: 'measure'});
     p.mark('late', {startTime: 20});

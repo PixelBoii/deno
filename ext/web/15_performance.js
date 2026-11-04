@@ -1,8 +1,11 @@
 // Copyright 2018-2026 the Deno authors. MIT license.
 
 (function () {
+"use strict";
 const { core, primordials } = __bootstrap;
-const { op_now, op_time_origin } = core.ops;
+const { op_now, op_time_origin, op_performance_object_bind,
+  op_performance_object_data, op_performance_observer_register_factory,
+  op_performance_observer_callback_factory } = core.ops;
 const {
   ArrayPrototypeFilter,
   ArrayPrototypeIncludes,
@@ -12,10 +15,12 @@ const {
   ArrayPrototypeSort,
   ArrayPrototypeSplice,
   MathFloor,
+  ObjectCreate,
   ObjectKeys,
   ObjectFreeze,
   ObjectPrototypeIsPrototypeOf,
   queueMicrotask,
+  ReflectApply,
   ReflectHas,
   Symbol,
   SymbolFor,
@@ -158,7 +163,7 @@ function drainResourceTimingBuffer() {
 }
 
 function sortedEntries(entries) {
-  return ArrayPrototypeSort(ArrayPrototypeSlice(entries), (a, b) => a.startTime - b.startTime);
+  return ArrayPrototypeSort(copyObserverEntries(entries), (a, b) => a.startTime - b.startTime);
 }
 
 webidl.converters["PerformanceMarkOptions"] = webidl
@@ -483,24 +488,31 @@ class PerformanceMeasure extends PerformanceEntry {
 webidl.configureInterface(PerformanceMeasure);
 const PerformanceMeasurePrototype = PerformanceMeasure.prototype;
 
+// Opaque host state is shared across same-isolate realms. Backend operations
+// retain their creating timeline, even when a foreign prototype method is used.
+const observerData = object => op_performance_object_data(object, 0);
+const entryListData = object => op_performance_object_data(object, 1);
+
+function copyObserverEntries(entries) {
+  const result = [];
+  for (let i = 0; i < entries.length; i++) ArrayPrototypePush(result, entries[i]);
+  return result;
+}
+
 function scheduleObserverCallback(observer) {
-  if (observer[_scheduled]) {
-    return;
-  }
-  observer[_scheduled] = true;
+  const state = observerData(observer);
+  if (state.scheduled) return;
+  state.scheduled = true;
   queueObserverTask(() => {
-    observer[_scheduled] = false;
-    const entries = observer[_buffer];
-    observer[_buffer] = [];
+    state.scheduled = false;
+    const entries = state.buffer;
+    state.buffer = [];
     if (entries.length > 0) {
-      const entryList = new PerformanceObserverEntryList(
-        sortedEntries(entries),
-        illegalConstructorKey,
-      );
+      const delivery = state.factory(sortedEntries(entries));
       try {
-        observer[_callback].call(observer, entryList, observer, { droppedEntriesCount: 0 });
+        ReflectApply(state.callback, observer, [delivery.list, observer, delivery.options]);
       } catch (error) {
-        reportObserverError(error, observer[_callback]);
+        reportObserverError(error, state.callback);
       }
     }
   });
@@ -509,179 +521,168 @@ function scheduleObserverCallback(observer) {
 function queuePerformanceEntry(entry) {
   for (let i = 0; i < performanceObservers.length; i++) {
     const observer = performanceObservers[i];
-    if (ArrayPrototypeIncludes(observer[_entryTypes], entry.entryType)) {
-      ArrayPrototypePush(observer[_buffer], entry);
+    const state = observerData(observer);
+    if (ArrayPrototypeIncludes(state.entryTypes, entry.entryType)) {
+      ArrayPrototypePush(state.buffer, entry);
       scheduleObserverCallback(observer);
     }
   }
 }
 
-const _entries = Symbol("[[entries]]");
+function observerEntries(entries) {
+  return sortedEntries(copyObserverEntries(entries));
+}
+function observerEntriesByType(entries, type, count) {
+  const prefix = "Failed to execute 'getEntriesByType' on 'PerformanceObserverEntryList'";
+  webidl.requiredArguments(count, 1, prefix);
+  type = webidl.converters.DOMString(type, prefix, "Argument 1");
+  const result = [];
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i].entryType === type) ArrayPrototypePush(result, entries[i]);
+  }
+  return result;
+}
+function observerEntriesByName(entries, name, type, count) {
+  const prefix = "Failed to execute 'getEntriesByName' on 'PerformanceObserverEntryList'";
+  webidl.requiredArguments(count, 1, prefix);
+  name = webidl.converters.DOMString(name, prefix, "Argument 1");
+  if (type !== undefined) type = webidl.converters.DOMString(type, prefix, "Argument 2");
+  const result = [];
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (entry.name === name && (type === undefined || entry.entryType === type)) {
+      ArrayPrototypePush(result, entry);
+    }
+  }
+  return result;
+}
 
 class PerformanceObserverEntryList {
-  [_entries] = [];
-
   constructor(entries, key = undefined) {
-    if (key !== illegalConstructorKey) {
-      webidl.illegalConstructor();
-    }
-    this[webidl.brand] = webidl.brand;
-    this[_entries] = entries;
+    if (key !== illegalConstructorKey) webidl.illegalConstructor();
+    const state = ObjectCreate(null);
+    state.entries = copyObserverEntries(entries);
+    state.getEntries = observerEntries;
+    state.getEntriesByType = observerEntriesByType;
+    state.getEntriesByName = observerEntriesByName;
+    op_performance_object_bind(this, state, 1);
+    core.markHostInterface(this, "PerformanceObserverEntryList");
   }
-
   getEntries() {
-    webidl.assertBranded(this, PerformanceObserverEntryListPrototype);
-    return sortedEntries(this[_entries]);
+    const state = entryListData(this);
+    return state.getEntries(state.entries);
   }
-
   getEntriesByType(type) {
-    webidl.assertBranded(this, PerformanceObserverEntryListPrototype);
-    const prefix =
-      "Failed to execute 'getEntriesByType' on 'PerformanceObserverEntryList'";
-    webidl.requiredArguments(arguments.length, 1, prefix);
-    type = webidl.converters.DOMString(type, prefix, "Argument 1");
-    return ArrayPrototypeFilter(
-      this[_entries],
-      (entry) => entry.entryType === type,
-    );
+    const state = entryListData(this);
+    return state.getEntriesByType(state.entries, type, arguments.length);
   }
-
   getEntriesByName(name, type = undefined) {
-    webidl.assertBranded(this, PerformanceObserverEntryListPrototype);
-    const prefix =
-      "Failed to execute 'getEntriesByName' on 'PerformanceObserverEntryList'";
-    webidl.requiredArguments(arguments.length, 1, prefix);
-    name = webidl.converters.DOMString(name, prefix, "Argument 1");
-    if (type !== undefined) {
-      type = webidl.converters.DOMString(type, prefix, "Argument 2");
-    }
-    return ArrayPrototypeFilter(
-      this[_entries],
-      (entry) =>
-        entry.name === name && (type === undefined || entry.entryType === type),
-    );
+    const state = entryListData(this);
+    return state.getEntriesByName(state.entries, name, type, arguments.length);
   }
 }
 webidl.configureInterface(PerformanceObserverEntryList);
-const PerformanceObserverEntryListPrototype =
-  PerformanceObserverEntryList.prototype;
+const PerformanceObserverEntryListPrototype = PerformanceObserverEntryList.prototype;
 
-const _callback = Symbol("[[callback]]");
-const _entryTypes = Symbol("[[entryTypes]]");
-const _buffer = Symbol("[[buffer]]");
-const _scheduled = Symbol("[[scheduled]]");
-const _observerType = Symbol("[[observerType]]");
+// The entry-list wrapper and callback options belong to the callback's realm.
+function createObserverDelivery(entries) {
+  return {
+    list: new PerformanceObserverEntryList(entries, illegalConstructorKey),
+    options: { droppedEntriesCount: 0 },
+  };
+}
+op_performance_observer_register_factory(createObserverDelivery);
+
+function observePerformance(observer, options, count) {
+  const state = observerData(observer);
+  const prefix = "Failed to execute 'observe' on 'PerformanceObserver'";
+  webidl.requiredArguments(count, 1, prefix);
+  options = options ?? {};
+  let { entryTypes, type } = options;
+  if (entryTypes !== undefined && type !== undefined) {
+    throw new TypeError(`${prefix}: Cannot specify both 'entryTypes' and 'type'.`);
+  }
+  if (entryTypes === undefined && type === undefined) {
+    throw new TypeError(`${prefix}: Either 'entryTypes' or 'type' must be specified.`);
+  }
+  const mode = entryTypes !== undefined ? "multiple" : "single";
+  if (state.observerType !== undefined && state.observerType !== mode) {
+    throw new DOMException(`${prefix}: Cannot change observer type.`, "InvalidModificationError");
+  }
+  state.observerType = mode;
+  let types;
+  if (entryTypes !== undefined) {
+    entryTypes = webidl.converters["sequence<DOMString>"](entryTypes, prefix, "entryTypes");
+    types = [];
+    for (let i = 0; i < entryTypes.length; i++) {
+      if (ArrayPrototypeIncludes(supportedEntryTypes, entryTypes[i])) ArrayPrototypePush(types, entryTypes[i]);
+    }
+    if (types.length === 0) return;
+  } else {
+    type = webidl.converters.DOMString(type, prefix, "type");
+    if (!ArrayPrototypeIncludes(supportedEntryTypes, type)) return;
+    types = copyObserverEntries(state.entryTypes);
+    if (!ArrayPrototypeIncludes(types, type)) ArrayPrototypePush(types, type);
+  }
+  state.entryTypes = types;
+  if (!ArrayPrototypeIncludes(performanceObservers, observer)) ArrayPrototypePush(performanceObservers, observer);
+  if (type !== undefined && options.buffered === true) {
+    let appended = false;
+    for (let i = 0; i < performanceEntries.length; i++) {
+      const entry = performanceEntries[i];
+      if (entry.entryType === type) {
+        ArrayPrototypePush(state.buffer, entry);
+        appended = true;
+      }
+    }
+    if (appended) scheduleObserverCallback(observer);
+  }
+}
+function disconnectPerformance(observer) {
+  const state = observerData(observer);
+  const index = ArrayPrototypeIndexOf(performanceObservers, observer);
+  if (index !== -1) ArrayPrototypeSplice(performanceObservers, index, 1);
+  state.entryTypes = [];
+  state.buffer = [];
+}
+function takePerformanceRecords(observer) {
+  const state = observerData(observer);
+  const records = state.buffer;
+  state.buffer = [];
+  return records;
+}
 
 class PerformanceObserver {
-  static get supportedEntryTypes() {
-    return supportedEntryTypes;
-  }
-
-  [_callback] = null;
-  [_entryTypes] = [];
-  [_buffer] = [];
-  [_scheduled] = false;
-  [_observerType] = undefined;
-
+  static get supportedEntryTypes() { return supportedEntryTypes; }
   constructor(callback) {
     const prefix = "Failed to construct 'PerformanceObserver'";
     webidl.requiredArguments(arguments.length, 1, prefix);
     if (typeof callback !== "function") {
-      throw new TypeError(
-        `${prefix}: The callback provided as parameter 1 is not a function.`,
-      );
+      throw new TypeError(`${prefix}: The callback provided as parameter 1 is not a function.`);
     }
-    this[webidl.brand] = webidl.brand;
-    this[_callback] = callback;
+    const state = ObjectCreate(null);
+    state.callback = callback;
+    state.entryTypes = [];
+    state.buffer = [];
+    state.scheduled = false;
+    state.observerType = undefined;
+    state.observe = observePerformance;
+    state.disconnect = disconnectPerformance;
+    state.takeRecords = takePerformanceRecords;
+    // An unbootstrapped embedding realm has no entry-list interface factory.
+    // Browser Window/Worker realms always register their actual local factory.
+    state.factory = op_performance_observer_callback_factory(callback) ?? createObserverDelivery;
+    op_performance_object_bind(this, state, 0);
+    core.markHostInterface(this, "PerformanceObserver");
   }
-
   observe(options) {
-    webidl.assertBranded(this, PerformanceObserverPrototype);
-    const prefix = "Failed to execute 'observe' on 'PerformanceObserver'";
-
-    webidl.requiredArguments(arguments.length, 1, prefix);
-    options = options ?? {};
-    let { entryTypes, type } = options;
-
-    if (entryTypes !== undefined && type !== undefined) {
-      throw new TypeError(
-        `${prefix}: Cannot specify both 'entryTypes' and 'type'.`,
-      );
-    }
-
-    if (entryTypes === undefined && type === undefined) {
-      throw new TypeError(
-        `${prefix}: Either 'entryTypes' or 'type' must be specified.`,
-      );
-    }
-
-    const mode = entryTypes !== undefined ? "multiple" : "single";
-    if (this[_observerType] !== undefined && this[_observerType] !== mode) {
-      throw new DOMException(`${prefix}: Cannot change observer type.`, "InvalidModificationError");
-    }
-    this[_observerType] = mode;
-
-    let types;
-    if (entryTypes !== undefined) {
-      entryTypes = webidl.converters["sequence<DOMString>"](entryTypes, prefix, "entryTypes");
-      types = ArrayPrototypeFilter(
-        entryTypes,
-        (t) =>
-          ArrayPrototypeIncludes(PerformanceObserver.supportedEntryTypes, t),
-      );
-      if (types.length === 0) {
-        return;
-      }
-    } else {
-      type = webidl.converters.DOMString(type, prefix, "type");
-      if (
-        !ArrayPrototypeIncludes(PerformanceObserver.supportedEntryTypes, type)
-      ) {
-        return;
-      }
-      types = ArrayPrototypeIncludes(this[_entryTypes], type)
-        ? this[_entryTypes] : [...this[_entryTypes], type];
-    }
-
-    this[_entryTypes] = types;
-
-    if (!ArrayPrototypeIncludes(performanceObservers, this)) {
-      ArrayPrototypePush(performanceObservers, this);
-    }
-
-    // Per https://w3c.github.io/performance-timeline/#dom-performanceobserver-observe,
-    // when the single-type form is used with buffered=true, prepend any
-    // already-recorded entries of that type to the observer's buffer.
-    if (type !== undefined && options.buffered === true) {
-      let appended = false;
-      for (let i = 0; i < performanceEntries.length; i++) {
-        const entry = performanceEntries[i];
-        if (entry.entryType === type) {
-          ArrayPrototypePush(this[_buffer], entry);
-          appended = true;
-        }
-      }
-      if (appended) {
-        scheduleObserverCallback(this);
-      }
-    }
+    return observerData(this).observe(this, options, arguments.length);
   }
-
   disconnect() {
-    webidl.assertBranded(this, PerformanceObserverPrototype);
-    const index = ArrayPrototypeIndexOf(performanceObservers, this);
-    if (index !== -1) {
-      ArrayPrototypeSplice(performanceObservers, index, 1);
-    }
-    this[_entryTypes] = [];
-    this[_buffer] = [];
+    return observerData(this).disconnect(this);
   }
-
   takeRecords() {
-    webidl.assertBranded(this, PerformanceObserverPrototype);
-    const records = this[_buffer];
-    this[_buffer] = [];
-    return records;
+    return observerData(this).takeRecords(this);
   }
 }
 webidl.configureInterface(PerformanceObserver);
