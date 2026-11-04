@@ -38,6 +38,14 @@ pub(crate) fn op_performance_object_data<'s>(
   value: v8::Local<v8::Value>,
   kind: u32,
 ) -> Result<v8::Local<'s, v8::Object>, JsErrorBox> {
+  object_data(scope, value, kind)
+}
+
+pub(crate) fn object_data<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+  value: v8::Local<v8::Value>,
+  kind: u32,
+) -> Result<v8::Local<'s, v8::Object>, JsErrorBox> {
   let key = key(scope, kind)?;
   if kind > 1 || value.is_proxy() {
     return Err(JsErrorBox::type_error("Illegal invocation"));

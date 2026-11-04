@@ -12,6 +12,14 @@ mod console;
 pub fn enable_private_console_inspection(state: &mut deno_core::OpState) {
   state.put(console::PrivateInspection);
 }
+
+/// Access an actual observer's opaque registration state for a native binding.
+pub fn performance_observer_state<'s>(
+  scope: &mut deno_core::v8::PinScope<'s, '_>,
+  observer: deno_core::v8::Local<deno_core::v8::Value>,
+) -> Result<deno_core::v8::Local<'s, deno_core::v8::Object>, deno_error::JsErrorBox> {
+  performance_state::object_data(scope, observer, 0)
+}
 mod css_stylesheet;
 mod css_value;
 mod f64;
