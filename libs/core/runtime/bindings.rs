@@ -81,6 +81,9 @@ pub(crate) fn create_external_references(
   references.push(v8::ExternalReference {
     function: cppgc_template_constructor.map_fn_to(),
   });
+  references.push(v8::ExternalReference {
+    function: async_webidl_method_callback.map_fn_to(),
+  });
 
   // Using v8::OneByteConst and passing external references to it
   // allows V8 to take an optimized path when deserializing the snapshot.
@@ -665,13 +668,13 @@ pub(crate) fn upgrade_snapshotted_ops_with_fast_calls<'s, 'i>(
         op_ctx_function(scope, method, v8::ConstructorBehavior::Throw, false);
       let method_key = name_key(scope, method.decl());
       if method.decl().is_async {
-        // `setUpAsyncStub` installs the wrapped fn on `class_fn.prototype`
-        // when given the class as the third argument.
         let Some(class_fn) = class_fn else { continue };
-        let _ = set_up_async_stub_fn.call(
+        install_async_method(
           scope,
-          undefined.into(),
-          &[method_key.into(), method_fn.into(), class_fn.into()],
+          set_up_async_stub_fn,
+          method,
+          method_fn,
+          class_fn,
         );
       } else {
         prototype.set(scope, method_key.into(), method_fn.into());
@@ -805,6 +808,105 @@ fn op_ctx_constructor_behavior(op_ctx: &OpCtx) -> v8::ConstructorBehavior {
   }
 }
 
+// Promise-returning IDL operations reject invalid receivers at their native
+// entry. The private predicate checks the actual cppgc object, independent of
+// public prototypes and across realms. Valid calls retain the normal async op
+// bookkeeping and backend; their exceptions propagate unchanged.
+fn async_webidl_method_callback<'s, 'i>(
+  scope: &mut v8::PinScope<'s, 'i>,
+  args: v8::FunctionCallbackArguments<'s>,
+  mut rv: v8::ReturnValue,
+) {
+  let external = args.data().try_cast::<v8::External>().unwrap();
+  // Op contexts outlive all functions in their realm. Their addresses are
+  // already registered as snapshot external references for native op calls.
+  let op_ctx = unsafe { &*(external.value() as *const OpCtx) };
+  let metadata = &op_ctx.decl().metadata;
+  if !(metadata.webidl_receiver.unwrap())(scope, args.this().into()) {
+    let message =
+      v8::String::new(scope, metadata.webidl_receiver_error.unwrap()).unwrap();
+    let error = v8::Exception::type_error(scope, message);
+    let resolver = v8::PromiseResolver::new(scope).unwrap();
+    resolver.reject(scope, error);
+    rv.set(resolver.get_promise(scope).into());
+    return;
+  }
+  let key = async_webidl_method_key(scope, op_ctx);
+  let global = scope.get_current_context().global(scope);
+  let stub = global
+    .get_private(scope, key)
+    .unwrap()
+    .try_cast::<v8::Function>()
+    .unwrap();
+  let values: Vec<_> = (0..args.length()).map(|i| args.get(i)).collect();
+  if let Some(result) = stub.call(scope, args.this().into(), &values) {
+    rv.set(result);
+  }
+}
+
+fn async_webidl_method_key<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+  op_ctx: &OpCtx,
+) -> v8::Local<'s, v8::Private> {
+  // Methods share their class's OpId. Include the member name so distinct
+  // async operations on one class retain their own backend dispatch.
+  let name = format!(
+    "deno_core::async_webidl_method::{}::{}",
+    op_ctx.id,
+    op_ctx.decl().name
+  );
+  let name = v8::String::new(scope, &name).unwrap();
+  v8::Private::for_api(scope, Some(name))
+}
+
+fn install_async_method<'s, 'i>(
+  scope: &mut v8::PinScope<'s, 'i>,
+  set_up_async_stub_fn: v8::Local<'s, v8::Function>,
+  op_ctx: &OpCtx,
+  op_fn: v8::Local<'s, v8::Function>,
+  constructor: v8::Local<'s, v8::Function>,
+) {
+  let method_key = name_key(scope, op_ctx.decl());
+  let undefined = v8::undefined(scope);
+  if op_ctx.decl().metadata.webidl_receiver.is_none() {
+    set_up_async_stub_fn
+      .call(
+        scope,
+        undefined.into(),
+        &[method_key.into(), op_fn.into(), constructor.into()],
+      )
+      .unwrap();
+    return;
+  }
+  let stub = set_up_async_stub_fn
+    .call(scope, undefined.into(), &[method_key.into(), op_fn.into()])
+    .unwrap();
+  let external =
+    v8::External::new(scope, op_ctx as *const OpCtx as *mut c_void);
+  // Keep the traced JS bookkeeping in its realm's private storage. Native
+  // callback data uses the same snapshot-supported OpCtx external as ops;
+  // embedding an External inside an arbitrary JS callback-data array is not
+  // supported by V8's startup snapshot serializer.
+  let key = async_webidl_method_key(scope, op_ctx);
+  let global = scope.get_current_context().global(scope);
+  global.set_private(scope, key, stub);
+  let function = v8::Function::builder(async_webidl_method_callback)
+    .data(external.into())
+    .length(op_ctx.decl().arg_count.saturating_sub(1) as i32)
+    .constructor_behavior(v8::ConstructorBehavior::Throw)
+    .build(scope)
+    .unwrap();
+  let name = op_ctx.decl().name_fast.v8_string(scope).unwrap();
+  function.set_name(name);
+  let prototype_key = v8::String::new(scope, "prototype").unwrap();
+  let prototype = constructor
+    .get(scope, prototype_key.into())
+    .unwrap()
+    .try_cast::<v8::Object>()
+    .unwrap();
+  prototype.set(scope, method_key.into(), function.into());
+}
+
 fn op_ctx_template_or_accessor<'s, 'i>(
   accessor_store: &AccessorStore,
   set_up_async_stub_fn: v8::Local<'s, v8::Function>,
@@ -823,18 +925,9 @@ fn op_ctx_template_or_accessor<'s, 'i>(
     );
     let method_key = name_key(scope, op_ctx.decl());
     if op_ctx.decl().is_async {
-      let undefined = v8::undefined(scope);
       let op_fn = op_fn.get_function(scope).unwrap();
-
       let tmpl_fn = constructor.get_function(scope).unwrap();
-
-      let _result = set_up_async_stub_fn
-        .call(
-          scope,
-          undefined.into(),
-          &[method_key.into(), op_fn.into(), tmpl_fn.into()],
-        )
-        .unwrap();
+      install_async_method(scope, set_up_async_stub_fn, op_ctx, op_fn, tmpl_fn);
 
       return;
     }
@@ -916,14 +1009,13 @@ fn op_ctx_function_or_accessor<'s, 'i>(
       op_ctx_plain_function(scope, op_ctx, v8::ConstructorBehavior::Throw);
     let method_key = name_key(scope, op_ctx.decl());
     if op_ctx.decl().is_async {
-      let undefined = v8::undefined(scope);
-      let _result = set_up_async_stub_fn
-        .call(
-          scope,
-          undefined.into(),
-          &[method_key.into(), op_fn.into(), constructor.into()],
-        )
-        .unwrap();
+      install_async_method(
+        scope,
+        set_up_async_stub_fn,
+        op_ctx,
+        op_fn,
+        constructor,
+      );
 
       return;
     }

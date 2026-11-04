@@ -449,6 +449,24 @@ pub(crate) fn generate_op2(
   let symbol_for = config.symbol;
   let constructable = config.constructable;
 
+  let webidl_receiver =
+    if config.webidl && base_generator_state.needs_self && is_async {
+      let self_ty = &base_generator_state.self_ty;
+      let unwrap = &base_generator_state.try_unwrap_cppgc;
+      let message = format!(
+        "Failed to execute '{}' on '{}': Illegal invocation",
+        base_generator_state.webidl_name, self_ty,
+      );
+      quote! {
+        webidl_receiver: Some(|scope, receiver| {
+          ::deno_core::_ops::#unwrap::<#self_ty>(scope, receiver).is_some()
+        }),
+        webidl_receiver_error: Some(#message),
+      }
+    } else {
+      quote! {}
+    };
+
   Ok(quote! {
     #[allow(non_camel_case_types)]
     #vis const fn #rust_name <#(#generic : #bound),*> () -> ::deno_core::_ops::OpDecl {
@@ -476,6 +494,7 @@ pub(crate) fn generate_op2(
           /*fast_fn_metrics*/ #fast_definition_metrics,
           /*metadata*/ ::deno_core::OpMetadata {
             #(#meta_key: Some(#meta_value),)*
+            #webidl_receiver
             ..::deno_core::OpMetadata::default()
           },
         );

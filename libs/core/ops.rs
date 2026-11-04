@@ -65,6 +65,12 @@ pub struct OpMetadata {
   pub sanitizer_details: Option<&'static str>,
   /// The fix for the issue described in `sanitizer_details`.
   pub sanitizer_fix: Option<&'static str>,
+  /// Actual cppgc receiver validation for a promise-returning Web IDL method.
+  /// This runs at its native entry, before the async op's JS bookkeeping.
+  pub webidl_receiver: Option<
+    for<'s, 'i> fn(&mut v8::PinScope<'s, 'i>, v8::Local<'s, v8::Value>) -> bool,
+  >,
+  pub webidl_receiver_error: Option<&'static str>,
 }
 
 impl OpMetadata {
@@ -72,6 +78,8 @@ impl OpMetadata {
     Self {
       sanitizer_details: None,
       sanitizer_fix: None,
+      webidl_receiver: None,
+      webidl_receiver_error: None,
     }
   }
 }

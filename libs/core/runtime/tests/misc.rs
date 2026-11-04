@@ -2501,6 +2501,7 @@ async fn test_native_webidl_receiver_errors() {
     #[fast]
     fn value(&self) -> u32 { 7 }
     async fn later(&self) -> u32 { 7 }
+    async fn second(&self) -> u32 { 11 }
   }
   #[op2]
   impl NodeReceiver {
@@ -2515,25 +2516,57 @@ async fn test_native_webidl_receiver_errors() {
     extensions: vec![receivers::init()],
     ..Default::default()
   });
-  runtime.execute_script("native-receiver-errors", r#"
+  const CHECK_RECEIVERS: &str = r#"
     const {BrowserReceiver,NodeReceiver}=Deno.core.ops;
     const check=(value)=>{if(!value)throw Error('native receiver check')};
     const browser=new BrowserReceiver(),node=new NodeReceiver();
     for(let i=0;i<12000;i++)check(browser.value()===7&&node.value()===9);
     function failure(operation,receiver) {try{operation.call(receiver)}catch(error){return error}throw Error('receiver accepted');}
-    for(const receiver of [{},node,new Proxy(browser,{})]) {
+    for(const receiver of [{},Object.create(BrowserReceiver.prototype),node,new Proxy(browser,{})]) {
       const error=failure(BrowserReceiver.prototype.value,receiver);
       check(error instanceof TypeError&&error.message==='Illegal invocation'&&!('code' in error));
     }
     const nodeError=failure(NodeReceiver.prototype.value,browser);
     check(nodeError instanceof TypeError&&nodeError.code==='ERR_INVALID_THIS'&&nodeError.message==='expected NodeReceiver');
-    let complete=false;
-    const promise=BrowserReceiver.prototype.later.call({});
-    check(promise instanceof Promise);
-    promise.catch(error=>{check(error instanceof TypeError&&!('code' in error)&&error.message==="Failed to execute 'later' on 'BrowserReceiver': Illegal invocation");complete=true;});
-  "#).unwrap();
+    let complete=0;
+    const later=globalThis.savedNativeLater??BrowserReceiver.prototype.later;
+    const second=BrowserReceiver.prototype.second;
+    check(later.length===0&&Function.prototype.toString.call(later).includes('[native code]'));
+    for(const receiver of [{},Object.create(BrowserReceiver.prototype),node,new Proxy(browser,{})]) {
+      const promise=later.call(receiver);
+      check(promise instanceof Promise);
+      promise.catch(error=>{
+        check(error instanceof TypeError&&!('code' in error)&&error.message==="Failed to execute 'later' on 'BrowserReceiver': Illegal invocation");
+        check(!error.stack.includes('ext:')&&error.stack.includes('native-receiver-errors'));
+        complete++;
+      });
+    }
+    Object.setPrototypeOf(browser,null);
+    later.call(browser).then(value=>{check(value===7);complete++;});
+    second.call(browser).then(value=>{check(value===11);complete++;});
+  "#;
+  runtime.execute_script("native-receiver-errors", CHECK_RECEIVERS).unwrap();
   runtime.run_event_loop(Default::default()).await.unwrap();
-  runtime.execute_script("receiver-complete", "check(complete)").unwrap();
+  runtime.execute_script("receiver-complete", "check(complete===6)").unwrap();
+  drop(runtime);
+
+  // The native entry's traced JS stub and OpCtx external must also survive a
+  // startup snapshot, rather than silently restoring the old JS-only method.
+  let _snapshot_lock = super::snapshot_test_lock();
+  let mut snapshot_runtime = JsRuntimeForSnapshot::new(RuntimeOptions {
+    extensions: vec![receivers::init()],
+    ..Default::default()
+  });
+  snapshot_runtime.execute_script("capture-native-method", "globalThis.savedNativeLater=Deno.core.ops.BrowserReceiver.prototype.later;").unwrap();
+  let snapshot = snapshot_runtime.snapshot();
+  let mut runtime = JsRuntime::new(RuntimeOptions {
+    startup_snapshot: Some(Box::leak(snapshot)),
+    extensions: vec![receivers::init()],
+    ..Default::default()
+  });
+  runtime.execute_script("native-receiver-errors", CHECK_RECEIVERS).unwrap();
+  runtime.run_event_loop(Default::default()).await.unwrap();
+  runtime.execute_script("receiver-complete", "check(complete===6)").unwrap();
 }
 
 #[test]
