@@ -41,11 +41,9 @@ impl CryptoKeyType {
 pub struct CryptoKey {
   key_type: CryptoKeyType,
   extractable: bool,
-  /// The frozen-array of `KeyUsage` strings returned by the `usages` getter.
-  /// Stored as `v8::Global` so the getter satisfies `SameObject` per spec.
+  /// Private usage metadata; the public getter returns a fresh array.
   usages: v8::Global<v8::Value>,
-  /// The algorithm dictionary returned by the `algorithm` getter (also
-  /// `SameObject`).
+  /// Private algorithm metadata; public dictionaries must not alias it.
   algorithm: v8::Global<v8::Value>,
   /// Opaque, JS-side wrapper carrying a cppgc-tracked
   /// [`crate::key_store::CryptoKeyHandle`] on its `cppgc` property. Held by
@@ -77,6 +75,19 @@ impl CryptoKey {
     Err(SharedError::IllegalConstructor)
   }
 
+  /// Private module bridge: validate the actual cppgc key without invoking
+  /// getters or trusting script-visible prototypes and compatibility symbols.
+  #[fast]
+  #[rename("isInstance")]
+  #[static_method]
+  fn is_instance(
+    scope: &mut v8::PinScope,
+    value: v8::Local<v8::Value>,
+  ) -> bool {
+    deno_core::cppgc::try_unwrap_cppgc_object::<CryptoKey>(scope, value)
+      .is_some()
+  }
+
   #[getter]
   #[string]
   #[rename("type")]
@@ -93,16 +104,18 @@ impl CryptoKey {
   fn usages<'s>(
     &self,
     scope: &mut v8::PinScope<'s, '_>,
-  ) -> v8::Local<'s, v8::Value> {
-    v8::Local::new(scope, &self.usages)
+  ) -> Option<v8::Local<'s, v8::Value>> {
+    let value = v8::Local::new(scope, &self.usages);
+    clone_key_metadata(scope, value)
   }
 
   #[getter]
   fn algorithm<'s>(
     &self,
     scope: &mut v8::PinScope<'s, '_>,
-  ) -> v8::Local<'s, v8::Value> {
-    v8::Local::new(scope, &self.algorithm)
+  ) -> Option<v8::Local<'s, v8::Value>> {
+    let value = v8::Local::new(scope, &self.algorithm);
+    clone_key_metadata(scope, value)
   }
 
   /// Internal `CryptoKey.exportNodeMaterial(key)` — used by the
@@ -155,6 +168,42 @@ impl CryptoKey {
       usages,
     )
   }
+}
+
+// Algorithm dictionaries contain only native data, including nested hash
+// dictionaries and RSA exponent typed arrays. V8 copies these without looking
+// up author functions and without sharing mutable objects with the real key.
+struct KeyMetadataClone;
+impl v8::ValueSerializerImpl for KeyMetadataClone {
+  fn throw_data_clone_error<'s>(
+    &self,
+    scope: &mut v8::PinScope<'s, '_>,
+    message: v8::Local<'s, v8::String>,
+  ) {
+    let exception = v8::Exception::type_error(scope, message);
+    scope.throw_exception(exception);
+  }
+}
+impl v8::ValueDeserializerImpl for KeyMetadataClone {}
+
+fn clone_key_metadata<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+  value: v8::Local<'s, v8::Value>,
+) -> Option<v8::Local<'s, v8::Value>> {
+  use v8::{ValueDeserializerHelper, ValueSerializerHelper};
+  let context = scope.get_current_context();
+  let serializer = v8::ValueSerializer::new(scope, Box::new(KeyMetadataClone));
+  serializer.write_header();
+  if serializer.write_value(context, value) != Some(true) {
+    return None;
+  }
+  let bytes = serializer.release();
+  let deserializer =
+    v8::ValueDeserializer::new(scope, Box::new(KeyMetadataClone), &bytes);
+  if deserializer.read_header(context) != Some(true) {
+    return None;
+  }
+  deserializer.read_value(context)
 }
 
 #[allow(

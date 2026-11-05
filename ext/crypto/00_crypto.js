@@ -28,6 +28,7 @@ const {
   ObjectAssign,
   ObjectDefineProperty,
   ObjectPrototypeIsPrototypeOf,
+  ReflectDeleteProperty,
   SafeArrayIterator,
   StringPrototypeSlice,
   SymbolFor,
@@ -38,6 +39,23 @@ const { createFilteredInspectProxy } = core.loadExtScript(
   "ext:deno_web/01_console.js",
 );
 const { kKeyObject } = internals;
+
+// Keep the real native allocation, clone and Node interop operations in this
+// privileged module. Public WebCrypto constructors are not a factory bridge.
+const createCrypto = Crypto.create;
+const registerCryptoSymbols = Crypto.registerSymbols;
+const createSubtleCrypto = SubtleCrypto.create;
+const cloneCryptoKey = CryptoKey.fromCloneData;
+const exportCryptoKeyMaterial = CryptoKey.exportNodeMaterial;
+const importCryptoKey = CryptoKey.importSync;
+const isCryptoKey = CryptoKey.isInstance;
+for (const [owner, names] of [
+  [Crypto, ["create", "registerSymbols"]],
+  [SubtleCrypto, ["create"]],
+  [CryptoKey, ["fromCloneData", "exportNodeMaterial", "importSync", "isInstance"]],
+]) {
+  for (const name of names) ReflectDeleteProperty(owner, name);
+}
 
 // op2-generated interface constructors expose the macro's internal
 // new-target signal (`_: bool`) as a formal parameter, giving the
@@ -105,7 +123,7 @@ applyWebIdlInterfaceShape(CryptoKey);
 // into a freshly-minted cppgc instance.
 core.registerCloneableResource(
   "CryptoKey",
-  (data) => CryptoKey.fromCloneData(data),
+  (data) => FunctionPrototypeCall(cloneCryptoKey, CryptoKey, data),
 );
 
 // `SubtleCrypto.prototype.deriveBits` is a cppgc method declared with three
@@ -235,8 +253,8 @@ applyWebIdlInterfaceShape(SubtleCrypto);
 let subtleSingleton;
 function getSubtleSingleton() {
   if (subtleSingleton === undefined) {
-    Crypto.registerSymbols(webidl.brand, kKeyObject);
-    subtleSingleton = SubtleCrypto.create();
+    FunctionPrototypeCall(registerCryptoSymbols, Crypto, webidl.brand, kKeyObject);
+    subtleSingleton = FunctionPrototypeCall(createSubtleCrypto, SubtleCrypto);
     subtleSingleton[webidl.brand] = webidl.brand;
   }
   return subtleSingleton;
@@ -300,7 +318,7 @@ let cryptoSingleton;
 let usesSeededRng = false;
 function getCryptoSingleton() {
   if (cryptoSingleton === undefined) {
-    cryptoSingleton = Crypto.create(getSubtleSingleton());
+    cryptoSingleton = FunctionPrototypeCall(createCrypto, Crypto, getSubtleSingleton());
     usesSeededRng = op_crypto_is_seeded();
     // Stamp the WebIDL brand so `Reflect.getPrototypeOf(crypto)` and
     // the IDL `Crypto interface: operation randomUUID()` invariants
@@ -314,11 +332,11 @@ function getCryptoSingleton() {
 // the cppgc static methods declared on the `CryptoKey` class in
 // `ext/crypto/crypto_key.rs` (which delegate to `node_interop.rs`).
 function cryptoKeyExportNodeKeyMaterial(cryptoKey) {
-  return CryptoKey.exportNodeMaterial(cryptoKey);
+  return FunctionPrototypeCall(exportCryptoKeyMaterial, CryptoKey, cryptoKey);
 }
 
 function importCryptoKeySync(format, keyData, algorithm, extractable, usages) {
-  return CryptoKey.importSync(format, keyData, algorithm, extractable, usages);
+  return FunctionPrototypeCall(importCryptoKey, CryptoKey, format, keyData, algorithm, extractable, usages);
 }
 
 return {
@@ -327,6 +345,7 @@ return {
     return getCryptoSingleton();
   },
   CryptoKey,
+  isCryptoKey,
   cryptoKeyExportNodeKeyMaterial,
   importCryptoKeySync,
   SubtleCrypto,
