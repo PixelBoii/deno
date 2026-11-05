@@ -62,6 +62,9 @@ let performanceEntries = [];
 let timeOrigin;
 let timeOriginOffset = 0;
 let timePrecision = 0;
+let sharedClock;
+let sharedTimeOrigin = 0;
+let coarseSharedTimeOrigin = 0;
 const performanceObservers = [];
 let supportedEntryTypes = ObjectFreeze(["mark", "measure"]);
 let queueObserverTask = queueMicrotask;
@@ -75,10 +78,19 @@ const hrU8 = new Uint8Array(8);
 const hr = new Uint32Array(TypedArrayPrototypeGetBuffer(hrU8));
 
 function setTimeOrigin(options = undefined) {
+  if (options?.clock) sharedClock = options.clock;
+  timePrecision = options?.precision ?? 0;
+  if (sharedClock) {
+    const current = sharedClock.now();
+    const elapsed = options?.reset ? options.elapsed ?? 0 : sharedClock.elapsed();
+    sharedTimeOrigin = current - elapsed;
+    coarseSharedTimeOrigin = coarsenTime(sharedTimeOrigin);
+    timeOrigin = coarsenTime(sharedClock.unixOffset() + sharedTimeOrigin);
+    return;
+  }
   op_time_origin(hrU8);
   timeOrigin = hr[0] * 1000 + hr[1] / 1e6;
   timeOriginOffset = 0;
-  timePrecision = options?.precision ?? 0;
   if (options?.reset) {
     op_now(hrU8);
     timeOriginOffset = hr[0] * 1000 + hr[1] / 1e6 - (options.elapsed ?? 0);
@@ -89,7 +101,23 @@ function setTimeOrigin(options = undefined) {
   }
 }
 
+function coarsenTime(value) {
+  return timePrecision ? MathFloor(value / timePrecision) * timePrecision : value;
+}
+
+// First coarsen the shared timestamp, then express it relative to this realm.
+// Deno realms without an embedding clock keep their existing elapsed clock.
+function coarsenRelativeTime(value) {
+  return sharedClock
+    ? coarsenTime(sharedTimeOrigin + value) - coarseSharedTimeOrigin
+    : coarsenTime(value);
+}
+
 function now() {
+  if (sharedClock) {
+    const value = coarsenTime(sharedClock.now()) - coarseSharedTimeOrigin;
+    return value < 0 ? 0 : value;
+  }
   op_now(hrU8);
   const value = hr[0] * 1000 + hr[1] / 1e6 - timeOriginOffset;
   return timePrecision ? MathFloor(value / timePrecision) * timePrecision : value;
@@ -981,6 +1009,7 @@ return {
   PerformanceObserver,
   PerformanceObserverEntryList,
   setTimeOrigin,
+  coarsenRelativeTime,
   configurePerformanceTimeline,
   createPerformanceEntry,
   updatePerformanceEntry,
