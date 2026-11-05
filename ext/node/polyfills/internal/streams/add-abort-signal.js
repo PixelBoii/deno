@@ -3,11 +3,12 @@
 
 (function () {
 const { core, primordials } = __bootstrap;
+const { FunctionPrototypeCall } = primordials;
 const imported1 = core.loadExtScript("ext:deno_node/internal/errors.ts");
 const {
   isNodeStream,
   isWebStream,
-  kControllerErrorFunction,
+  getWebStreamControllerError,
 } = core.loadExtScript("ext:deno_node/internal/streams/utils.js");
 const eos =
   core.loadExtScript("ext:deno_node/internal/streams/end-of-stream.js").default;
@@ -61,9 +62,8 @@ const addAbortSignalNoValidate = function (signal, stream) {
       stream.destroy(new AbortError(undefined, { cause: signal.reason }));
     }
     : () => {
-      stream[kControllerErrorFunction](
-        new AbortError(undefined, { cause: signal.reason }),
-      );
+      FunctionPrototypeCall(getWebStreamControllerError(stream), stream,
+        new AbortError(undefined, { cause: signal.reason }));
     };
   if (signal.aborted) {
     onAbort();

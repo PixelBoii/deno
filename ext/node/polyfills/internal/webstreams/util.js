@@ -31,9 +31,12 @@ const { inspect } = core.loadExtScript("ext:deno_node/util.ts");
 const assert = core.loadExtScript("ext:deno_node/internal/assert.mjs").default;
 
 const webStreams = core.loadExtScript("ext:deno_web/06_streams.js");
+webStreams.installNodeStreamInterop();
 
 const kState = webStreams.kNodeWebStreamsState;
 const kType = webStreams.kNodeWebStreamsType;
+const getState = webStreams.getNodeWebStreamState;
+const getType = webStreams.getNodeWebStreamType;
 
 const AsyncIterator = {
   __proto__: Object.getPrototypeOf(
@@ -111,48 +114,18 @@ function copyArrayBuffer(src, srcOffset, dst, dstOffset, size) {
 
 function isBrandCheck(brand) {
   return (value) =>
-    value != null && value[kState] !== undefined && value[kType] === brand;
+    value != null && getState(value) !== undefined && getType(value) === brand;
 }
 
-function dequeueValue(controller) {
-  assert(controller[kState].queue !== undefined);
-  assert(controller[kState].queueTotalSize !== undefined);
-  assert(controller[kState].queue.length);
-  const { value, size } = ArrayPrototypeShift(controller[kState].queue);
-  controller[kState].queueTotalSize = MathMax(
-    0,
-    controller[kState].queueTotalSize - size,
-  );
-  return value;
-}
-
-function resetQueue(controller) {
-  assert(controller[kState].queue !== undefined);
-  assert(controller[kState].queueTotalSize !== undefined);
-  controller[kState].queue.length = 0;
-}
-
-function peekQueueValue(controller) {
-  assert(controller[kState].queue !== undefined);
-  assert(controller[kState].queueTotalSize !== undefined);
-  assert(controller[kState].queue.length);
-  return controller[kState].queue[0].value;
-}
-
+function dequeueValue(controller) { return webStreams.dequeueStreamQueueValue(controller); }
+function resetQueue(controller) { return webStreams.resetStreamQueue(controller); }
+function peekQueueValue(controller) { return webStreams.peekStreamQueueValue(controller); }
 function enqueueValueWithSize(controller, value, size) {
-  assert(controller[kState].queue !== undefined);
-  assert(controller[kState].queueTotalSize !== undefined);
   size = +size;
-  if (
-    typeof size !== "number" ||
-    NumberIsNaN(size) ||
-    size < 0 ||
-    size === Infinity
-  ) {
+  if (NumberIsNaN(size) || size < 0 || size === Infinity) {
     throw new ERR_INVALID_ARG_VALUE.RangeError("size", size);
   }
-  ArrayPrototypePush(controller[kState].queue, { value, size });
-  controller[kState].queueTotalSize += size;
+  return webStreams.enqueueStreamQueueValue(controller, value, size);
 }
 
 function isPromisePending(promise) {

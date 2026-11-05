@@ -28,6 +28,18 @@ const kControllerErrorFunction = SymbolFor(
   "nodejs.webstream.controllerErrorFunction",
 );
 
+const webStreams = core.loadExtScript("ext:deno_web/06_streams.js");
+webStreams.installNodeStreamInterop();
+function getWebStreamClosedPromise(value) {
+  return webStreams.getNodeWebStreamType(value) !== undefined
+    ? webStreams.getStreamClosedPromise(value) : value?.[kIsClosedPromise];
+}
+function getWebStreamControllerError(value) {
+  return webStreams.getNodeWebStreamType(value) !== undefined
+    ? webStreams.getStreamControllerError(value) : value?.[kControllerErrorFunction];
+}
+
+
 const kState = Symbol("kState");
 const kObjectMode = 1 << 0;
 const kErrorEmitted = 1 << 1;
@@ -337,7 +349,9 @@ const _defaultExport1 = {
   isReadable,
   kIsReadable,
   kIsClosedPromise,
+  getWebStreamClosedPromise,
   kControllerErrorFunction,
+  getWebStreamControllerError,
   kIsWritable,
   isClosed,
   isDuplexNodeStream,
@@ -405,6 +419,7 @@ return {
   kCloseEmitted,
   kConstructed,
   kControllerErrorFunction,
+  getWebStreamControllerError,
   kDestroyed,
   kEmitClose,
   kEnded,
@@ -412,6 +427,7 @@ return {
   kErrored,
   kErrorEmitted,
   kIsClosedPromise,
+  getWebStreamClosedPromise,
   kIsDestroyed,
   kIsDisturbed,
   kIsErrored,

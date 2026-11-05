@@ -3,6 +3,7 @@
 
 (function () {
 const { core } = __bootstrap;
+core.loadExtScript("ext:deno_web/06_streams.js").installNodeStreamInterop();
 const {
   TransformStream,
   TransformStreamDefaultController,

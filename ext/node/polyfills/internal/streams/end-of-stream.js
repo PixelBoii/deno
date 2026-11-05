@@ -29,7 +29,7 @@ const {
   isWritableFinished,
   isWritableNodeStream,
   isWritableStream,
-  kIsClosedPromise,
+  getWebStreamClosedPromise,
   willEmitClose: _willEmitClose,
 } = core.loadExtScript("ext:deno_node/internal/streams/utils.js");
 
@@ -345,7 +345,7 @@ function eosWeb(stream, options, callback) {
     }
   };
   PromisePrototypeThen(
-    stream[kIsClosedPromise].promise,
+    getWebStreamClosedPromise(stream).promise,
     resolverFn,
     resolverFn,
   );

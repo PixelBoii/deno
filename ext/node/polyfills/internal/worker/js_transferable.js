@@ -5,7 +5,6 @@
 (function () {
 const { core } = __bootstrap;
 
-const webStreams = core.loadExtScript("ext:deno_web/06_streams.js");
 
 const transferMode = Symbol("kTransferMode");
 const kCloneable = 1;
@@ -14,8 +13,8 @@ const kDisallowCloneAndTransfer = 4;
 
 const kClone = Symbol.for("nodejs.messaging.kClone");
 const kDeserialize = Symbol.for("nodejs.messaging.kDeserialize");
-const kTransfer = webStreams.kNodeMessagingTransfer ??
-  Symbol.for("nodejs.messaging.kTransfer");
+// Generic Node transfer hooks remain separate from native stream registrations.
+const kTransfer = Symbol.for("nodejs.messaging.kTransfer");
 const kTransferList = Symbol.for("nodejs.messaging.kTransferList");
 
 function markTransferMode(obj, cloneable = false, transferable = false) {
