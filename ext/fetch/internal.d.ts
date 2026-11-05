@@ -48,8 +48,13 @@ declare module "ext:deno_fetch/21_formdata.js" {
 declare module "ext:deno_fetch/22_body.js" {
   function mixinBody(
     prototype: any,
-    bodySymbol: symbol,
-    mimeTypeSymbol: symbol,
+    getBody: (object: object) => InnerBody | null,
+    getMimeType: (object: object) => unknown,
+  ): (object: object, type: string) => Promise<unknown>;
+  function initializeBodyConsumer(
+    object: object,
+    consume: (object: object, type: string) => Promise<unknown>,
+    consumeFastJSON?: (object: object) => Promise<unknown> | null,
   ): void;
   class InnerBody {
     constructor(stream?: ReadableStream<Uint8Array>);

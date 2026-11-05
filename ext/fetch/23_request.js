@@ -28,7 +28,7 @@ const { HTTP_TOKEN_CODE_POINT_RE } = core.loadExtScript(
   "ext:deno_web/00_infra.js",
 );
 const { URL } = core.loadExtScript("ext:deno_web/00_url.js");
-const { extractBody, mixinBody } = core.loadExtScript(
+const { extractBody, mixinBody, initializeBodyConsumer } = core.loadExtScript(
   "ext:deno_fetch/22_body.js",
 );
 const { getLocationHref } = core.loadExtScript("ext:deno_web/12_location.js");
@@ -279,6 +279,7 @@ const requestData = value => core.hostInterfaceData(value, "Request");
 function initializeRequest(request) {
   core.markHostInterface(request, "Request");
   core.markUnserializableHostObject(request);
+  initializeBodyConsumer(request, consumeRequestBody, consumeRequestJSONFast);
 }
 
 function requestHeaders(request) {
@@ -674,26 +675,18 @@ class Request {
 webidl.configureInterface(Request);
 const RequestPrototype = Request.prototype;
 webidl.registerInterfaceBrand(RequestPrototype, value => core.hasHostInterface(value, "Request"));
-mixinBody(RequestPrototype, requestBody, requestMimeType);
-const requestJson = RequestPrototype.json;
-ObjectDefineProperty(RequestPrototype, "json", {
-  __proto__: null,
-  value: function json() {
-    try {
-      webidl.assertBranded(this, RequestPrototype);
-      const text = requestData(this).request.consumeTextBody?.();
-      if (text !== null && text !== undefined) {
-        return PromiseResolve(JSONParse(text));
-      }
-    } catch (error) {
-      return PromiseReject(error);
+const consumeRequestBody = mixinBody(RequestPrototype, requestBody, requestMimeType);
+function consumeRequestJSONFast(request) {
+  try {
+    const text = requestData(request).request.consumeTextBody?.();
+    if (text !== null && text !== undefined) {
+      return PromiseResolve(JSONParse(text));
     }
-    return FunctionPrototypeCall(requestJson, this);
-  },
-  writable: true,
-  configurable: true,
-  enumerable: true,
-});
+  } catch (error) {
+    return PromiseReject(error);
+  }
+  return null;
+}
 
 webidl.converters["Request"] = webidl.createInterfaceConverter(
   "Request",

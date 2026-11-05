@@ -18,12 +18,13 @@ const {
   ObjectDefineProperties,
   ObjectPrototypeIsPrototypeOf,
   PromisePrototypeCatch,
+  PromiseReject,
   SafeWeakMap,
   TypedArrayPrototypeGetBuffer,
   TypedArrayPrototypeGetByteLength,
   TypedArrayPrototypeGetByteOffset,
   TypedArrayPrototypeGetSymbolToStringTag,
-  TypedArrayPrototypeSlice,
+  TypedArrayPrototypeSet,
   TypeError,
   Uint8Array,
   WeakMapPrototypeGet,
@@ -290,12 +291,10 @@ class InnerBody {
  * @param {any} prototype
  * @param {(value: object) => InnerBody | null} getBody
  * @param {(value: object) => MimeType | null} getMimeType
- * @returns {void}
+ * @returns {(object: object, type: string) => Promise<unknown>}
  */
 function mixinBody(prototype, getBody, getMimeType) {
-  async function consumeBody(object, type) {
-    webidl.assertBranded(object, prototype);
-
+  async function consumeActualBody(object, type) {
     const inner = getBody(object);
     const body = inner !== null
       ? await inner.consume()
@@ -305,6 +304,25 @@ function mixinBody(prototype, getBody, getMimeType) {
       ? getMimeType(object)
       : null;
     return packageData(body, type, mimeType);
+  }
+
+  function consumeBody(object, type) {
+    let consumer;
+    try {
+      webidl.assertBranded(object, prototype);
+      consumer = core.hostInterfaceData(object, "Body");
+      if (type === "JSON" && consumer.consumeFastJSON !== undefined) {
+        const fast = consumer.consumeFastJSON(object);
+        if (fast !== null) return fast;
+      }
+      const inner = getBody(object);
+      if (inner !== null && inner.unusable()) {
+        throw new TypeError("Body already consumed.");
+      }
+    } catch (error) {
+      return PromiseReject(error);
+    }
+    return consumer.consume(object, type);
   }
 
   /** @type {PropertyDescriptorMap} */
@@ -430,9 +448,16 @@ function mixinBody(prototype, getBody, getMimeType) {
       enumerable: true,
     },
   };
-  return ObjectDefineProperties(prototype, mixin);
+  ObjectDefineProperties(prototype, mixin);
+  return consumeActualBody;
 }
 
+function initializeBodyConsumer(object, consume, consumeFastJSON = undefined) {
+  core.markHostInterface(object, "Body");
+  const data = core.hostInterfaceData(object, "Body");
+  data.consume = consume;
+  data.consumeFastJSON = consumeFastJSON;
+}
 /**
  * https://fetch.spec.whatwg.org/#concept-body-package-data
  * @param {Uint8Array | string} bytes
@@ -442,13 +467,13 @@ function mixinBody(prototype, getBody, getMimeType) {
 function packageData(bytes, type, mimeType) {
   switch (type) {
     case "ArrayBuffer":
-      return TypedArrayPrototypeGetBuffer(chunkToU8(bytes));
+      return TypedArrayPrototypeGetBuffer(copyBodyBytes(bytes));
     case "Blob":
       return new Blob([bytes], {
         type: mimeType !== null ? mimesniff.serializeMimeType(mimeType) : "",
       });
     case "bytes":
-      return chunkToU8(bytes);
+      return copyBodyBytes(bytes);
     case "FormData": {
       if (mimeType !== null) {
         const essence = mimesniff.essence(mimeType);
@@ -479,6 +504,13 @@ function packageData(bytes, type, mimeType) {
     case "text":
       return chunkToString(bytes);
   }
+}
+
+function copyBodyBytes(chunk) {
+  const bytes = chunkToU8(chunk);
+  const result = new Uint8Array(TypedArrayPrototypeGetByteLength(bytes));
+  TypedArrayPrototypeSet(result, bytes);
+  return result;
 }
 
 /**
@@ -521,9 +553,9 @@ function extractBody(object) {
         DataViewPrototypeGetByteLength(/** @type {DataView} */ (object)),
       );
     }
-    source = TypedArrayPrototypeSlice(object);
+    source = copyBodyBytes(object);
   } else if (isArrayBuffer(object)) {
-    source = TypedArrayPrototypeSlice(new Uint8Array(object));
+    source = copyBodyBytes(new Uint8Array(object));
   } else if (ObjectPrototypeIsPrototypeOf(FormDataPrototype, object)) {
     const res = formDataToBlob(object);
     stream = res.stream();
@@ -663,5 +695,5 @@ webidl.converters["BodyInit_DOMString?"] = webidl.createNullableConverter(
   webidl.converters["BodyInit_DOMString"],
 );
 
-return { extractBody, InnerBody, mixinBody, packageData };
+return { extractBody, InnerBody, mixinBody, initializeBodyConsumer, packageData };
 })();

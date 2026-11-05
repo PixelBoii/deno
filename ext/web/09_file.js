@@ -42,6 +42,7 @@ const {
   MathMax,
   MathMin,
   ObjectDefineProperty,
+  PromiseReject,
   ReflectApply,
   RegExpPrototypeTest,
   SafeArrayIterator,
@@ -227,6 +228,22 @@ async function blobBytes(blob) {
 const blobBacking = value => core.hostInterfaceData(value, "Blob");
 const fileData = value => core.hostInterfaceData(value, "File");
 
+async function consumeBlob(blob, type) {
+  const bytes = await blobBytes(blob);
+  if (type === "text") return core.decode(bytes);
+  if (type === "arrayBuffer") return TypedArrayPrototypeGetBuffer(bytes);
+  return bytes;
+}
+
+function consumeActualBlob(blob, type) {
+  try {
+    webidl.assertBranded(blob, BlobPrototype);
+  } catch (error) {
+    return PromiseReject(error);
+  }
+  return blobBacking(blob).consume(blob, type);
+}
+
 const NORMALIZE_PATTERN = new SafeRegExp(/^[\x20-\x7E]*$/);
 
 /**
@@ -294,6 +311,7 @@ class Blob {
     );
 
     core.markHostInterface(this, "Blob");
+    blobBacking(this).consume = consumeBlob;
 
     const { parts, size } = processBlobParts(
       blobParts,
@@ -457,27 +475,22 @@ class Blob {
   /**
    * @returns {Promise<string>}
    */
-  async text() {
-    webidl.assertBranded(this, BlobPrototype);
-    const buffer = await blobBytes(this);
-    return core.decode(buffer);
+  text() {
+    return consumeActualBlob(this, "text");
   }
 
   /**
    * @returns {Promise<ArrayBuffer>}
    */
-  async arrayBuffer() {
-    webidl.assertBranded(this, BlobPrototype);
-    const buf = await blobBytes(this);
-    return TypedArrayPrototypeGetBuffer(buf);
+  arrayBuffer() {
+    return consumeActualBlob(this, "arrayBuffer");
   }
 
   /**
    * @returns {Promise<Uint8Array>}
    */
-  async bytes() {
-    webidl.assertBranded(this, BlobPrototype);
-    return await blobBytes(this);
+  bytes() {
+    return consumeActualBlob(this, "bytes");
   }
 
   [SymbolFor("Deno.privateCustomInspect")](inspect, inspectOptions) {

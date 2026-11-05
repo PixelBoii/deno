@@ -16,7 +16,7 @@ const {
   regexMatcher,
   serializeJSValueToJSONString,
 } = core.loadExtScript("ext:deno_web/00_infra.js");
-const { extractBody, mixinBody } = core.loadExtScript(
+const { extractBody, mixinBody, initializeBodyConsumer } = core.loadExtScript(
   "ext:deno_fetch/22_body.js",
 );
 const { getLocationHref } = core.loadExtScript("ext:deno_web/12_location.js");
@@ -624,6 +624,7 @@ const responseData = value => core.hostInterfaceData(value, "Response");
 function initializeResponseIdentity(response) {
   core.markHostInterface(response, "Response");
   core.markUnserializableHostObject(response);
+  initializeBodyConsumer(response, consumeResponseBody);
 }
 
 function responseMimeType(response) {
@@ -861,7 +862,7 @@ ObjectDefineProperties(Response, {
 });
 const ResponsePrototype = Response.prototype;
 webidl.registerInterfaceBrand(ResponsePrototype, value => core.hasHostInterface(value, "Response"));
-mixinBody(ResponsePrototype, responseBody, responseMimeType);
+const consumeResponseBody = mixinBody(ResponsePrototype, responseBody, responseMimeType);
 
 webidl.converters["Response"] = webidl.createInterfaceConverter(
   "Response",
