@@ -1,6 +1,7 @@
 // Copyright 2018-2026 the Deno authors. MIT license.
 
 mod blob;
+mod base64_bindings;
 
 mod broadcast_channel;
 mod compression;
@@ -92,6 +93,7 @@ deno_core::extension!(deno_web,
     op_base64_encode_from_buffer,
     op_base64_atob,
     op_base64_btoa,
+    base64_bindings::op_create_base64_binding,
     op_base64url_decode,
     op_base64url_decode_into,
     op_base64url_encode_from_buffer,
@@ -410,7 +412,11 @@ fn op_base64_decode_into(
 }
 
 #[op2]
-fn op_base64_atob(#[scoped] mut s: ByteString) -> Result<ByteString, WebError> {
+fn op_base64_atob(#[scoped] s: ByteString) -> Result<ByteString, WebError> {
+  decode_base64_atob(s)
+}
+
+fn decode_base64_atob(mut s: ByteString) -> Result<ByteString, WebError> {
   // Decode into a temporary buffer — simdutf requires non-overlapping buffers.
   let max_len = v8::simdutf::maximal_binary_length_from_base64(&s);
   const STACK_BUF_SIZE: usize = 8192;
