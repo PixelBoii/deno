@@ -18,6 +18,7 @@ const {
   MathRandom,
   ObjectFreeze,
   ObjectFromEntries,
+  ObjectGetOwnPropertyDescriptor,
   ObjectPrototypeIsPrototypeOf,
   ReflectApply,
   SafeMap,
@@ -39,6 +40,8 @@ const {
 } = primordials;
 
 const formDataState = value => core.hostInterfaceData(value, "FormData");
+const fileName = ObjectGetOwnPropertyDescriptor(File.prototype, "name").get;
+const blobType = ObjectGetOwnPropertyDescriptor(Blob.prototype, "type").get;
 
 /**
  * @param {string} name
@@ -317,8 +320,9 @@ function formDataToBlob(formData) {
   const chunks = [];
   const prefix = `--${boundary}\r\nContent-Disposition: form-data; name="`;
 
-  // deno-lint-ignore deno-internal/prefer-primordials
-  for (const { 0: name, 1: value } of formData) {
+  const entries = formDataState(formData).entries;
+  for (let index = 0; index < entries.length; index++) {
+    const { name, value } = entries[index];
     if (typeof value === "string") {
       ArrayPrototypePush(
         chunks,
@@ -332,9 +336,9 @@ function formDataToBlob(formData) {
     } else {
       ArrayPrototypePush(
         chunks,
-        prefix + escape(name) + `"; filename="${escape(value.name, true)}"` +
+        prefix + escape(name) + `"; filename="${escape(FunctionPrototypeCall(fileName, value), true)}"` +
           CRLF +
-          `Content-Type: ${value.type || "application/octet-stream"}\r\n\r\n`,
+          `Content-Type: ${FunctionPrototypeCall(blobType, value) || "application/octet-stream"}\r\n\r\n`,
         value,
         CRLF,
       );

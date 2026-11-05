@@ -38,7 +38,6 @@ const {
 } = core.loadExtScript("ext:deno_web/00_url.js");
 const {
   formDataFromEntries,
-  FormDataPrototype,
   formDataToBlob,
   parseFormData,
 } = core.loadExtScript("ext:deno_fetch/21_formdata.js");
@@ -556,7 +555,7 @@ function extractBody(object) {
     source = copyBodyBytes(object);
   } else if (isArrayBuffer(object)) {
     source = copyBodyBytes(new Uint8Array(object));
-  } else if (ObjectPrototypeIsPrototypeOf(FormDataPrototype, object)) {
+  } else if (core.hasHostInterface(object, "FormData")) {
     const res = formDataToBlob(object);
     stream = res.stream();
     source = res;
@@ -665,7 +664,7 @@ webidl.converters["BodyInit_DOMString"] = (V, prefix, context, opts) => {
     return webidl.converters["ReadableStream"](V, prefix, context, opts);
   } else if (ObjectPrototypeIsPrototypeOf(BlobPrototype, V)) {
     return webidl.converters["Blob"](V, prefix, context, opts);
-  } else if (ObjectPrototypeIsPrototypeOf(FormDataPrototype, V)) {
+  } else if (core.hasHostInterface(V, "FormData")) {
     return webidl.converters["FormData"](V, prefix, context, opts);
   } else if (ObjectPrototypeIsPrototypeOf(URLSearchParamsPrototype, V)) {
     return webidl.converters["URLSearchParams"](V, prefix, context, opts);
