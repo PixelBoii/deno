@@ -142,6 +142,13 @@ function updatePerformanceEntry(entry, duration) {
   entryBacking(entry).duration = duration;
 }
 
+// Embedding entry types append their actual private IDL fields to the base
+// operation's dictionary, including when its method is borrowed across realms.
+function setPerformanceEntryJSONFields(entry, appendFields) {
+  webidl.assertBranded(entry, PerformanceEntryPrototype);
+  entryBacking(entry).appendJSONFields = appendFields;
+}
+
 // A reused initial Window receives a new document navigation, while keeping
 // its Performance object, clock, observers, and other timeline entries.
 function replacePerformanceEntry(previous, next) {
@@ -346,12 +353,14 @@ class PerformanceEntry {
 
   toJSON() {
     webidl.assertBranded(this, PerformanceEntryPrototype);
-    return {
+    const result = {
       name: entryBacking(this).name,
       entryType: entryBacking(this).entryType,
       startTime: entryBacking(this).startTime,
       duration: entryBacking(this).duration,
     };
+    entryBacking(this).appendJSONFields?.(result);
+    return result;
   }
 
   [SymbolFor("Deno.privateCustomInspect")](inspect, inspectOptions) {
@@ -1006,6 +1015,7 @@ return {
   configurePerformanceTimeline,
   createPerformanceEntry,
   updatePerformanceEntry,
+  setPerformanceEntryJSONFields,
   replacePerformanceEntry,
   recordPerformanceEntry,
   queuePerformanceEntry,
