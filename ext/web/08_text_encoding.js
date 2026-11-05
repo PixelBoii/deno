@@ -53,19 +53,10 @@ const { createFilteredInspectProxy } = core.loadExtScript(
   "ext:deno_web/01_console.js",
 );
 
+const decoderData = value => core.hostInterfaceData(value, "TextDecoder");
+const encoderData = value => core.hostInterfaceData(value, "TextEncoder");
+
 class TextDecoder {
-  /** @type {string} */
-  #encoding;
-  /** @type {boolean} */
-  #fatal;
-  /** @type {boolean} */
-  #ignoreBOM;
-  /** @type {boolean} */
-  #utf8SinglePass;
-
-  /** @type {object | null} */
-  #handle = null;
-
   /**
    * @param {string} label
    * @param {TextDecoderOptions} options
@@ -96,29 +87,32 @@ class TextDecoder {
         throw err;
       }
     }
-    this.#encoding = encoding;
-    this.#fatal = options.fatal;
-    this.#ignoreBOM = options.ignoreBOM;
-    this.#utf8SinglePass = encoding === "utf-8" && !options.fatal;
-    this[webidl.brand] = webidl.brand;
+    core.markHostInterface(this, "TextDecoder");
+    core.markUnserializableHostObject(this);
+    const state = decoderData(this);
+    state.encoding = encoding;
+    state.fatal = options.fatal;
+    state.ignoreBOM = options.ignoreBOM;
+    state.utf8SinglePass = encoding === "utf-8" && !options.fatal;
+    state.handle = null;
   }
 
   /** @returns {string} */
   get encoding() {
     webidl.assertBranded(this, TextDecoderPrototype);
-    return this.#encoding;
+    return decoderData(this).encoding;
   }
 
   /** @returns {boolean} */
   get fatal() {
     webidl.assertBranded(this, TextDecoderPrototype);
-    return this.#fatal;
+    return decoderData(this).fatal;
   }
 
   /** @returns {boolean} */
   get ignoreBOM() {
     webidl.assertBranded(this, TextDecoderPrototype);
-    return this.#ignoreBOM;
+    return decoderData(this).ignoreBOM;
   }
 
   /**
@@ -133,12 +127,12 @@ class TextDecoder {
     // try/finally that the slow path needs.
     if (
       options === undefined &&
-      this.#utf8SinglePass &&
-      this.#handle === null &&
+      decoderData(this).utf8SinglePass &&
+      decoderData(this).handle === null &&
       TypedArrayPrototypeGetSymbolToStringTag(input) === "Uint8Array" &&
       !isSharedArrayBuffer(TypedArrayPrototypeGetBuffer(input))
     ) {
-      return op_encoding_decode_utf8(input, this.#ignoreBOM);
+      return op_encoding_decode_utf8(input, decoderData(this).ignoreBOM);
     }
     if (input !== undefined) {
       // Fast path: skip full BufferSource validation for Uint8Array
@@ -161,10 +155,6 @@ class TextDecoder {
         "Argument 2",
       );
       stream = options.stream;
-    }
-
-    if (stream && input.length === 0) {
-      return "";
     }
 
     try {
@@ -220,17 +210,17 @@ class TextDecoder {
       }
 
       // Fast path for single pass encoding.
-      if (!stream && this.#handle === null) {
+      if (!stream && decoderData(this).handle === null) {
         // Fast path for utf8 single pass encoding.
-        if (this.#utf8SinglePass) {
-          return op_encoding_decode_utf8(input, this.#ignoreBOM);
+        if (decoderData(this).utf8SinglePass) {
+          return op_encoding_decode_utf8(input, decoderData(this).ignoreBOM);
         }
 
         return op_encoding_decode_single(
           input,
-          this.#encoding,
-          this.#fatal,
-          this.#ignoreBOM,
+          decoderData(this).encoding,
+          decoderData(this).fatal,
+          decoderData(this).ignoreBOM,
         );
       }
 
@@ -242,22 +232,22 @@ class TextDecoder {
       // in `op_encoding_decode`. `op_encoding_decode_utf8_ascii_only`
       // returns `null` for any non-ASCII byte, in which case we fall
       // through to the general streaming op (which will create the handle).
-      if (stream && this.#utf8SinglePass && this.#handle === null) {
+      if (stream && decoderData(this).utf8SinglePass && decoderData(this).handle === null) {
         const ascii = op_encoding_decode_utf8_ascii_only(input);
         if (ascii !== null) return ascii;
       }
 
-      if (this.#handle === null) {
-        this.#handle = op_encoding_new_decoder(
-          this.#encoding,
-          this.#fatal,
-          this.#ignoreBOM,
+      if (decoderData(this).handle === null) {
+        decoderData(this).handle = op_encoding_new_decoder(
+          decoderData(this).encoding,
+          decoderData(this).fatal,
+          decoderData(this).ignoreBOM,
         );
       }
-      return op_encoding_decode(input, this.#handle, stream);
+      return op_encoding_decode(input, decoderData(this).handle, stream);
     } finally {
-      if (!stream && this.#handle !== null) {
-        this.#handle = null;
+      if (!stream && decoderData(this).handle !== null) {
+        decoderData(this).handle = null;
       }
     }
   }
@@ -280,10 +270,15 @@ class TextDecoder {
 
 webidl.configureInterface(TextDecoder);
 const TextDecoderPrototype = TextDecoder.prototype;
+webidl.registerInterfaceBrand(TextDecoderPrototype, value => core.hasHostInterface(value, "TextDecoder"));
 
 class TextEncoder {
   constructor() {
-    this[webidl.brand] = webidl.brand;
+    core.markHostInterface(this, "TextEncoder");
+    core.markUnserializableHostObject(this);
+    const state = encoderData(this);
+    state.encode = input => core.encode(input);
+    state.encodeInto = encodeInto;
   }
 
   /** @returns {string} */
@@ -306,7 +301,7 @@ class TextEncoder {
         "Argument 1",
       );
     }
-    return core.encode(input);
+    return encoderData(this).encode(input);
   }
 
   /**
@@ -336,19 +331,7 @@ class TextEncoder {
         encodeIntoOpts,
       );
     }
-    const packed = op_encoding_encode_into(source, destination);
-    if (packed === ENCODE_INTO_PACKED_SENTINEL) {
-      op_encoding_encode_into_fallback(source, destination, encodeIntoBuf);
-      return {
-        read: encodeIntoBuf[0],
-        written: encodeIntoBuf[1],
-      };
-    }
-    const read = MathTrunc(packed / ENCODE_INTO_PACKED_MULTIPLIER);
-    return {
-      read,
-      written: packed - read * ENCODE_INTO_PACKED_MULTIPLIER,
-    };
+    return encoderData(this).encodeInto(source, destination);
   }
 
   [SymbolFor("Deno.privateCustomInspect")](inspect, inspectOptions) {
@@ -363,6 +346,22 @@ class TextEncoder {
   }
 }
 
+function encodeInto(source, destination) {
+  const packed = op_encoding_encode_into(source, destination);
+  if (packed === ENCODE_INTO_PACKED_SENTINEL) {
+    op_encoding_encode_into_fallback(source, destination, encodeIntoBuf);
+    return {
+      read: encodeIntoBuf[0],
+      written: encodeIntoBuf[1],
+    };
+  }
+  const read = MathTrunc(packed / ENCODE_INTO_PACKED_MULTIPLIER);
+  return {
+    read,
+    written: packed - read * ENCODE_INTO_PACKED_MULTIPLIER,
+  };
+}
+
 const encodeIntoBuf = new Uint32Array(2);
 const encodeIntoOpts = { __proto__: null, allowShared: true };
 const ENCODE_INTO_PACKED_SENTINEL = -1;
@@ -370,6 +369,7 @@ const ENCODE_INTO_PACKED_MULTIPLIER = 0x100000000;
 
 webidl.configureInterface(TextEncoder);
 const TextEncoderPrototype = TextEncoder.prototype;
+webidl.registerInterfaceBrand(TextEncoderPrototype, value => core.hasHostInterface(value, "TextEncoder"));
 
 class TextDecoderStream {
   /** @type {TextDecoder} */
