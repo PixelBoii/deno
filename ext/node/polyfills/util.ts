@@ -91,7 +91,7 @@ const { os: osConstants } = core.loadExtScript(
 const abortedRegistry = new SafeFinalizationRegistry((heldValue) => {
   const signal = WeakRefPrototypeDeref(heldValue.signal);
   if (signal !== undefined) {
-    signal[abortSignal.remove](heldValue.algorithm);
+    abortSignal.removeAbortAlgorithm(signal, heldValue.algorithm);
   }
 });
 
@@ -284,7 +284,7 @@ async function aborted(
     allowArray: true,
     allowFunction: true,
   });
-  if (signal.aborted) {
+  if (abortSignal.isAbortSignal(signal) ? abortSignal.isAborted(signal) : signal.aborted) {
     return PromiseResolve();
   }
   const abortPromise = PromiseWithResolvers();
@@ -295,7 +295,7 @@ async function aborted(
       abortPromise.resolve();
     }
   };
-  signal[abortSignal.add](algorithm);
+  abortSignal.addAbortAlgorithm(signal, algorithm);
   abortedRegistry.register(resource, {
     __proto__: null,
     signal: new SafeWeakRef(signal),

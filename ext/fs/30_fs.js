@@ -828,10 +828,10 @@ async function readFile(path, options) {
   let cancelRid;
   let abortHandler;
   if (options?.signal) {
-    options.signal.throwIfAborted();
+    abortSignal.throwIfAborted(options.signal);
     cancelRid = createCancelHandle();
     abortHandler = () => core.tryClose(cancelRid);
-    options.signal[abortSignal.add](abortHandler);
+    abortSignal.addAbortAlgorithm(options.signal, abortHandler);
   }
 
   try {
@@ -842,10 +842,10 @@ async function readFile(path, options) {
     return read;
   } finally {
     if (options?.signal) {
-      options.signal[abortSignal.remove](abortHandler);
+      abortSignal.removeAbortAlgorithm(options.signal, abortHandler);
 
       // always throw the abort error when aborted
-      options.signal.throwIfAborted();
+      abortSignal.throwIfAborted(options.signal);
     }
   }
 }
@@ -858,10 +858,10 @@ async function readTextFile(path, options) {
   let cancelRid;
   let abortHandler;
   if (options?.signal) {
-    options.signal.throwIfAborted();
+    abortSignal.throwIfAborted(options.signal);
     cancelRid = createCancelHandle();
     abortHandler = () => core.tryClose(cancelRid);
-    options.signal[abortSignal.add](abortHandler);
+    abortSignal.addAbortAlgorithm(options.signal, abortHandler);
   }
 
   try {
@@ -872,10 +872,10 @@ async function readTextFile(path, options) {
     return read;
   } finally {
     if (options?.signal) {
-      options.signal[abortSignal.remove](abortHandler);
+      abortSignal.removeAbortAlgorithm(options.signal, abortHandler);
 
       // always throw the abort error when aborted
-      options.signal.throwIfAborted();
+      abortSignal.throwIfAborted(options.signal);
     }
   }
 }
@@ -885,7 +885,8 @@ function writeFileSync(
   data,
   options = { __proto__: null },
 ) {
-  options.signal?.throwIfAborted();
+  const signal = options.signal;
+  if (signal != null) abortSignal.throwIfAborted(signal);
   op_fs_write_file_sync(
     pathFromURL(path),
     options.mode,
@@ -904,10 +905,10 @@ async function writeFile(
   let cancelRid;
   let abortHandler;
   if (options.signal) {
-    options.signal.throwIfAborted();
+    abortSignal.throwIfAborted(options.signal);
     cancelRid = createCancelHandle();
     abortHandler = () => core.tryClose(cancelRid);
-    options.signal[abortSignal.add](abortHandler);
+    abortSignal.addAbortAlgorithm(options.signal, abortHandler);
   }
   try {
     if (
@@ -937,10 +938,10 @@ async function writeFile(
     }
   } finally {
     if (options.signal) {
-      options.signal[abortSignal.remove](abortHandler);
+      abortSignal.removeAbortAlgorithm(options.signal, abortHandler);
 
       // always throw the abort error when aborted
-      options.signal.throwIfAborted();
+      abortSignal.throwIfAborted(options.signal);
     }
   }
 }

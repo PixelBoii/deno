@@ -515,11 +515,11 @@ class ChildProcess {
         // Ignore the error for https://github.com/denoland/deno/issues/27112
       }
     };
-    signal?.[abortSignal.add](onAbort);
+    (signal == null ? undefined : abortSignal.addAbortAlgorithm(signal, onAbort));
     const waitPromise = op_spawn_wait(this.#rid);
     this.#waitPromise = waitPromise;
     this.#status = PromisePrototypeThen(waitPromise, (res) => {
-      signal?.[abortSignal.remove](onAbort);
+      (signal == null ? undefined : abortSignal.removeAbortAlgorithm(signal, onAbort));
       this.#waitComplete = true;
       return res;
     });
@@ -683,10 +683,10 @@ function spawnInner(command, {
         // Ignore the error for https://github.com/denoland/deno/issues/27112
       }
     };
-    if (signal.aborted) {
+    if (abortSignal.isAborted(signal)) {
       onAbort();
     } else {
-      signal[abortSignal.add](onAbort);
+      abortSignal.addAbortAlgorithm(signal, onAbort);
     }
   }
 
@@ -698,7 +698,7 @@ function spawnInner(command, {
     ]),
     ({ 0: status, 1: stdout, 2: stderr }) => {
       if (onAbort !== null) {
-        signal[abortSignal.remove](onAbort);
+        abortSignal.removeAbortAlgorithm(signal, onAbort);
       }
       return {
         success: status.success,

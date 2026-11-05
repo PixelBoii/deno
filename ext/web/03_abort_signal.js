@@ -30,26 +30,98 @@ const { createFilteredInspectProxy } = core.loadExtScript(
 );
 const {
   defineEventHandler,
+  dispatch,
   Event,
   EventTarget,
   listenerCount,
   setIsTrusted,
 } = core.loadExtScript("ext:deno_web/02_event.js");
 
-const add = Symbol("[[add]]");
-const signalAbort = Symbol("[[signalAbort]]");
-const remove = Symbol("[[remove]]");
-const runAbortSteps = Symbol("[[runAbortSteps]]");
-const abortReason = Symbol("[[abortReason]]");
-const abortAlgos = Symbol("[[abortAlgos]]");
-const dependent = Symbol("[[dependent]]");
-const sourceSignals = Symbol("[[sourceSignals]]");
-const dependentSignals = Symbol("[[dependentSignals]]");
-const signal = Symbol("[[signal]]");
-const timerId = Symbol("[[timerId]]");
-const activeDependents = Symbol("[[activeDependents]]");
+const abortReason = "abortReason";
+const abortAlgos = "abortAlgos";
+const dependent = "dependent";
+const sourceSignals = "sourceSignals";
+const dependentSignals = "dependentSignals";
+const controllerSignal = "signal";
+const timerId = "timerId";
+const activeDependents = "activeDependents";
 
 const illegalConstructorKey = Symbol("illegalConstructorKey");
+const signalSlots = value => core.hostInterfaceData(value, "AbortSignal");
+const controllerSlots = value => core.hostInterfaceData(value, "AbortController");
+const { DOMException } = core.loadExtScript("ext:deno_web/01_dom_exception.js");
+function isAbortSignal(value) { return core.hasHostInterface(value, "AbortSignal"); }
+function isAborted(value) { return signalSlots(value)[abortReason] !== undefined; }
+function getAbortReason(value) { return signalSlots(value)[abortReason]; }
+function throwIfAborted(value) { if (isAborted(value)) throw getAbortReason(value); }
+function addAbortAlgorithm(signal, algorithm) {
+  if (isAborted(signal)) {
+    return;
+  }
+  signalSlots(signal)[abortAlgos] ??= new SafeSet();
+  SetPrototypeAdd(signalSlots(signal)[abortAlgos], algorithm);
+}
+
+function signalAbort(signal, reason = new DOMException("The signal has been aborted", "AbortError")) {
+  if (isAborted(signal)) {
+    return;
+  }
+  signalSlots(signal)[abortReason] = reason;
+
+  const dependentSignalsToAbort = [];
+  if (signalSlots(signal)[dependentSignals] !== null) {
+    for (const weakRef of new SafeSetIterator(signalSlots(signal)[dependentSignals])) {
+      const dependentSignal = WeakRefPrototypeDeref(weakRef);
+      if (
+        dependentSignal !== undefined &&
+        signalSlots(dependentSignal)[abortReason] === undefined
+      ) {
+        signalSlots(dependentSignal)[abortReason] = signalSlots(signal)[abortReason];
+        ArrayPrototypePush(dependentSignalsToAbort, dependentSignal);
+      }
+    }
+  }
+
+  runAbortSteps(signal);
+
+  if (dependentSignalsToAbort.length !== 0) {
+    for (let i = 0; i < dependentSignalsToAbort.length; ++i) {
+      const dependentSignal = dependentSignalsToAbort[i];
+      runAbortSteps(dependentSignal);
+    }
+  }
+}
+
+function runAbortSteps(signal) {
+  const algos = signalSlots(signal)[abortAlgos];
+  signalSlots(signal)[abortAlgos] = null;
+
+  if (algos !== null) {
+    for (const algorithm of new SafeSetIterator(algos)) {
+      algorithm();
+    }
+  }
+
+  if (listenerCount(signal, "abort") > 0) {
+    const event = new Event("abort");
+    setIsTrusted(event, true);
+    dispatch(signal, event);
+  }
+
+  // release strong references from source signals now that abort has been delivered
+  if (signalSlots(signal)[sourceSignals] !== null) {
+    for (const weakRef of new SafeSetIterator(signalSlots(signal)[sourceSignals])) {
+      const sourceSignal = WeakRefPrototypeDeref(weakRef);
+      if (sourceSignal !== undefined && signalSlots(sourceSignal)[activeDependents]) {
+        SetPrototypeDelete(signalSlots(sourceSignal)[activeDependents], signal);
+      }
+    }
+  }
+}
+
+function removeAbortAlgorithm(signal, algorithm) {
+  signalSlots(signal)[abortAlgos] && SetPrototypeDelete(signalSlots(signal)[abortAlgos], algorithm);
+}
 
 // When a dependent signal created by AbortSignal.any() is GC'd, clean up
 // its WeakRef from each source signal's dependentSignals set.
@@ -58,21 +130,13 @@ const dependentSignalCleanupRegistry = new SafeFinalizationRegistry(
   (prevent) => {
     const sourceSignal = WeakRefPrototypeDeref(prevent.ref);
     if (sourceSignal === undefined) return;
-    const deps = sourceSignal[dependentSignals];
+    const deps = signalSlots(sourceSignal)[dependentSignals];
     if (deps === null) return;
     SetPrototypeDelete(deps, prevent.weak);
   },
 );
 
 class AbortSignal extends EventTarget {
-  [abortReason] = undefined;
-  [abortAlgos] = null;
-  [dependent] = false;
-  [sourceSignals] = null;
-  [dependentSignals] = null;
-  [timerId] = null;
-  [webidl.brand] = webidl.brand;
-
   static any(signals) {
     const prefix = "Failed to execute 'AbortSignal.any'";
     // Node tags these validation errors with `ERR_INVALID_ARG_TYPE`; the
@@ -88,7 +152,7 @@ class AbortSignal extends EventTarget {
     // iterables fall through to the sequence converter below.
     if (ArrayIsArray(signals)) {
       for (let i = 0; i < signals.length; i++) {
-        if (!ObjectPrototypeIsPrototypeOf(AbortSignalPrototype, signals[i])) {
+        if (!isAbortSignal(signals[i])) {
           const err = new TypeError(
             `signals[${i}] is not of type AbortSignal.`,
           );
@@ -115,7 +179,7 @@ class AbortSignal extends EventTarget {
       reason = webidl.converters.any(reason);
     }
     const signal = new AbortSignal(illegalConstructorKey);
-    signal[signalAbort](reason);
+    signalAbort(signal, reason);
     return signal;
   }
 
@@ -132,16 +196,14 @@ class AbortSignal extends EventTarget {
     );
 
     const signal = new AbortSignal(illegalConstructorKey);
-    signal[timerId] = core.createSystemTimer(
+    signalSlots(signal)[timerId] = core.createSystemTimer(
       () => {
-        core.cancelTimer(signal[timerId]);
-        signal[timerId] = null;
-        signal[signalAbort](
-          new DOMException(
-            "The operation was aborted due to timeout",
-            "TimeoutError",
-          ),
-        );
+        core.cancelTimer(signalSlots(signal)[timerId]);
+        signalSlots(signal)[timerId] = null;
+        signalAbort(signal, new DOMException(
+          "The operation was aborted due to timeout",
+          "TimeoutError",
+        ));
       },
       millis,
       false, // start unrefed (like Node.js)
@@ -149,126 +211,63 @@ class AbortSignal extends EventTarget {
     return signal;
   }
 
-  [add](algorithm) {
-    if (this.aborted) {
-      return;
-    }
-    this[abortAlgos] ??= new SafeSet();
-    SetPrototypeAdd(this[abortAlgos], algorithm);
-  }
-
-  [signalAbort](
-    reason = new DOMException("The signal has been aborted", "AbortError"),
-  ) {
-    if (this.aborted) {
-      return;
-    }
-    this[abortReason] = reason;
-
-    const dependentSignalsToAbort = [];
-    if (this[dependentSignals] !== null) {
-      for (const weakRef of new SafeSetIterator(this[dependentSignals])) {
-        const dependentSignal = WeakRefPrototypeDeref(weakRef);
-        if (
-          dependentSignal !== undefined &&
-          dependentSignal[abortReason] === undefined
-        ) {
-          dependentSignal[abortReason] = this[abortReason];
-          ArrayPrototypePush(dependentSignalsToAbort, dependentSignal);
-        }
-      }
-    }
-
-    this[runAbortSteps]();
-
-    if (dependentSignalsToAbort.length !== 0) {
-      for (let i = 0; i < dependentSignalsToAbort.length; ++i) {
-        const dependentSignal = dependentSignalsToAbort[i];
-        dependentSignal[runAbortSteps]();
-      }
-    }
-  }
-
-  [runAbortSteps]() {
-    const algos = this[abortAlgos];
-    this[abortAlgos] = null;
-
-    if (algos !== null) {
-      for (const algorithm of new SafeSetIterator(algos)) {
-        algorithm();
-      }
-    }
-
-    if (listenerCount(this, "abort") > 0) {
-      const event = new Event("abort");
-      setIsTrusted(event, true);
-      super.dispatchEvent(event);
-    }
-
-    // release strong references from source signals now that abort has been delivered
-    if (this[sourceSignals] !== null) {
-      for (const weakRef of new SafeSetIterator(this[sourceSignals])) {
-        const sourceSignal = WeakRefPrototypeDeref(weakRef);
-        if (sourceSignal !== undefined && sourceSignal[activeDependents]) {
-          SetPrototypeDelete(sourceSignal[activeDependents], this);
-        }
-      }
-    }
-  }
-
-  [remove](algorithm) {
-    this[abortAlgos] && SetPrototypeDelete(this[abortAlgos], algorithm);
-  }
-
   constructor(key = null) {
     if (key !== illegalConstructorKey) {
       throw new TypeError("Illegal constructor");
     }
     super();
+    core.markHostInterface(this, "AbortSignal");
+    core.markUnserializableHostObject(this);
+    signalSlots(this)[abortReason] = undefined;
+    signalSlots(this)[abortAlgos] = null;
+    signalSlots(this)[dependent] = false;
+    signalSlots(this)[sourceSignals] = null;
+    signalSlots(this)[dependentSignals] = null;
+    signalSlots(this)[timerId] = null;
   }
 
   get aborted() {
     webidl.assertBranded(this, AbortSignalPrototype);
-    return this[abortReason] !== undefined;
+    return signalSlots(this)[abortReason] !== undefined;
   }
 
   get reason() {
     webidl.assertBranded(this, AbortSignalPrototype);
-    return this[abortReason];
+    return signalSlots(this)[abortReason];
   }
 
   throwIfAborted() {
     webidl.assertBranded(this, AbortSignalPrototype);
-    if (this[abortReason] !== undefined) {
-      throw this[abortReason];
+    if (signalSlots(this)[abortReason] !== undefined) {
+      throw signalSlots(this)[abortReason];
     }
   }
 
   // `addEventListener` and `removeEventListener` have to be overridden in
   // order to have the timer block the event loop while there are listeners.
-  // `[add]` and `[remove]` don't ref and unref the timer because they can
+  // Private add/remove algorithms do not ref or unref the timer because they can
   // only be used by Deno internals, which use it to essentially cancel async
   // ops which would block the event loop.
   addEventListener() {
     FunctionPrototypeApply(super.addEventListener, this, arguments);
     if (listenerCount(this, "abort") > 0) {
-      if (this[timerId] !== null) {
-        core.refTimer(this[timerId]);
-      } else if (this[sourceSignals] !== null) {
+      if (signalSlots(this)[timerId] !== null) {
+        core.refTimer(signalSlots(this)[timerId]);
+      } else if (signalSlots(this)[sourceSignals] !== null) {
         // While this dependent signal has 'abort' listeners, keep it strongly
         // reachable from each source signal so that an upstream abort can
         // still reach us. The source-to-dependent edge stored in
         // `dependentSignals` is a WeakRef; without this strong backref,
         // a GC between `AbortSignal.any(...)` and `source.abort()` will
         // collect us and the abort silently fails to propagate.
-        for (const weakRef of new SafeSetIterator(this[sourceSignals])) {
+        for (const weakRef of new SafeSetIterator(signalSlots(this)[sourceSignals])) {
           const sourceSignal = WeakRefPrototypeDeref(weakRef);
           if (sourceSignal === undefined) continue;
-          sourceSignal[activeDependents] ??= new SafeSet();
-          SetPrototypeAdd(sourceSignal[activeDependents], this);
-          if (sourceSignal[timerId] !== null) {
+          signalSlots(sourceSignal)[activeDependents] ??= new SafeSet();
+          SetPrototypeAdd(signalSlots(sourceSignal)[activeDependents], this);
+          if (signalSlots(sourceSignal)[timerId] !== null) {
             // For timer sources, also keep the event loop alive.
-            core.refTimer(sourceSignal[timerId]);
+            core.refTimer(signalSlots(sourceSignal)[timerId]);
           }
         }
       }
@@ -278,25 +277,25 @@ class AbortSignal extends EventTarget {
   removeEventListener() {
     FunctionPrototypeApply(super.removeEventListener, this, arguments);
     if (listenerCount(this, "abort") === 0) {
-      if (this[timerId] !== null) {
-        core.unrefTimer(this[timerId]);
-      } else if (this[sourceSignals] !== null) {
-        for (const weakRef of new SafeSetIterator(this[sourceSignals])) {
+      if (signalSlots(this)[timerId] !== null) {
+        core.unrefTimer(signalSlots(this)[timerId]);
+      } else if (signalSlots(this)[sourceSignals] !== null) {
+        for (const weakRef of new SafeSetIterator(signalSlots(this)[sourceSignals])) {
           const sourceSignal = WeakRefPrototypeDeref(weakRef);
           if (sourceSignal === undefined) continue;
           // Release the strong backref that addEventListener installed; the
           // dependent is now free to be GC'd if nothing else holds it.
-          if (sourceSignal[activeDependents]) {
-            SetPrototypeDelete(sourceSignal[activeDependents], this);
+          if (signalSlots(sourceSignal)[activeDependents]) {
+            SetPrototypeDelete(signalSlots(sourceSignal)[activeDependents], this);
           }
-          if (sourceSignal[timerId] !== null) {
+          if (signalSlots(sourceSignal)[timerId] !== null) {
             // Timer source: stop refing the event loop only if no other
             // dependent of this timer still has listeners.
             let allInactive = true;
-            if (sourceSignal[dependentSignals] !== null) {
+            if (signalSlots(sourceSignal)[dependentSignals] !== null) {
               for (
                 const depRef of new SafeSetIterator(
-                  sourceSignal[dependentSignals],
+                  signalSlots(sourceSignal)[dependentSignals],
                 )
               ) {
                 const dep = WeakRefPrototypeDeref(depRef);
@@ -310,7 +309,7 @@ class AbortSignal extends EventTarget {
               }
             }
             if (allInactive) {
-              core.unrefTimer(sourceSignal[timerId]);
+              core.unrefTimer(signalSlots(sourceSignal)[timerId]);
             }
           }
         }
@@ -337,22 +336,23 @@ defineEventHandler(AbortSignal.prototype, "abort");
 
 webidl.configureInterface(AbortSignal);
 const AbortSignalPrototype = AbortSignal.prototype;
+webidl.registerInterfaceBrand(AbortSignalPrototype, isAbortSignal);
 
 class AbortController {
-  [signal] = new AbortSignal(illegalConstructorKey);
-
   constructor() {
-    this[webidl.brand] = webidl.brand;
+    core.markHostInterface(this, "AbortController");
+    core.markUnserializableHostObject(this);
+    controllerSlots(this)[controllerSignal] = new AbortSignal(illegalConstructorKey);
   }
 
   get signal() {
     webidl.assertBranded(this, AbortControllerPrototype);
-    return this[signal];
+    return controllerSlots(this)[controllerSignal];
   }
 
   abort(reason) {
     webidl.assertBranded(this, AbortControllerPrototype);
-    this[signal][signalAbort](reason);
+    signalAbort(controllerSlots(this)[controllerSignal], reason);
   }
 
   [SymbolFor("Deno.privateCustomInspect")](inspect, inspectOptions) {
@@ -371,6 +371,7 @@ class AbortController {
 
 webidl.configureInterface(AbortController);
 const AbortControllerPrototype = AbortController.prototype;
+webidl.registerInterfaceBrand(AbortControllerPrototype, value => core.hasHostInterface(value, "AbortController"));
 
 webidl.converters.AbortSignal = webidl.createInterfaceConverter(
   "AbortSignal",
@@ -394,22 +395,22 @@ function createDependentAbortSignal(signals, prefix) {
   const resultSignal = new AbortSignal(illegalConstructorKey);
   for (let i = 0; i < signals.length; ++i) {
     const signal = signals[i];
-    if (signal[abortReason] !== undefined) {
-      resultSignal[abortReason] = signal[abortReason];
+    if (signalSlots(signal)[abortReason] !== undefined) {
+      signalSlots(resultSignal)[abortReason] = signalSlots(signal)[abortReason];
       return resultSignal;
     }
   }
 
-  resultSignal[dependent] = true;
-  resultSignal[sourceSignals] = new SafeSet();
+  signalSlots(resultSignal)[dependent] = true;
+  signalSlots(resultSignal)[sourceSignals] = new SafeSet();
   for (let i = 0; i < signals.length; ++i) {
     const signal = signals[i];
-    if (!signal[dependent]) {
-      signal[dependentSignals] ??= new SafeSet();
+    if (!signalSlots(signal)[dependent]) {
+      signalSlots(signal)[dependentSignals] ??= new SafeSet();
       const signalRef = new SafeWeakRef(signal);
       const resultRef = new SafeWeakRef(resultSignal);
-      SetPrototypeAdd(resultSignal[sourceSignals], signalRef);
-      SetPrototypeAdd(signal[dependentSignals], resultRef);
+      SetPrototypeAdd(signalSlots(resultSignal)[sourceSignals], signalRef);
+      SetPrototypeAdd(signalSlots(signal)[dependentSignals], resultRef);
       // When resultSignal is GC'd, remove its WeakRef from signal's dependentSignals
       dependentSignalCleanupRegistry.register(resultSignal, {
         ref: signalRef,
@@ -418,19 +419,19 @@ function createDependentAbortSignal(signals, prefix) {
     } else {
       for (
         const sourceSignalRef of new SafeSetIterator(
-          signal[sourceSignals],
+          signalSlots(signal)[sourceSignals],
         )
       ) {
         const sourceSignal = WeakRefPrototypeDeref(sourceSignalRef);
         if (sourceSignal === undefined) continue;
-        assert(sourceSignal[abortReason] === undefined);
-        assert(!sourceSignal[dependent]);
+        assert(signalSlots(sourceSignal)[abortReason] === undefined);
+        assert(!signalSlots(sourceSignal)[dependent]);
 
         // Check if already tracking this source
         let alreadyTracked = false;
         for (
           const existingRef of new SafeSetIterator(
-            resultSignal[sourceSignals],
+            signalSlots(resultSignal)[sourceSignals],
           )
         ) {
           if (WeakRefPrototypeDeref(existingRef) === sourceSignal) {
@@ -440,11 +441,11 @@ function createDependentAbortSignal(signals, prefix) {
         }
         if (alreadyTracked) continue;
 
-        sourceSignal[dependentSignals] ??= new SafeSet();
+        signalSlots(sourceSignal)[dependentSignals] ??= new SafeSet();
         const newSourceRef = new SafeWeakRef(sourceSignal);
         const resultRef = new SafeWeakRef(resultSignal);
-        SetPrototypeAdd(resultSignal[sourceSignals], newSourceRef);
-        SetPrototypeAdd(sourceSignal[dependentSignals], resultRef);
+        SetPrototypeAdd(signalSlots(resultSignal)[sourceSignals], newSourceRef);
+        SetPrototypeAdd(signalSlots(sourceSignal)[dependentSignals], resultRef);
         dependentSignalCleanupRegistry.register(resultSignal, {
           ref: newSourceRef,
           weak: resultRef,
@@ -460,11 +461,14 @@ return {
   AbortController,
   AbortSignal,
   AbortSignalPrototype,
-  add,
+  addAbortAlgorithm,
   createDependentAbortSignal,
   newSignal,
-  remove,
+  removeAbortAlgorithm,
   signalAbort,
-  timerId,
+  isAbortSignal,
+  isAborted,
+  getAbortReason,
+  throwIfAborted,
 };
 })();

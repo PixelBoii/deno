@@ -303,14 +303,14 @@ function requestSignal(request) {
   if (signal === false) {
     const signal = newSignal();
     data.signalCache = signal;
-    signal[signalAbort](new DOMException(MESSAGE_REQUEST_CANCELLED, "AbortError"));
+    signalAbort(signal, new DOMException(MESSAGE_REQUEST_CANCELLED, "AbortError"));
     return signal;
   }
   if (signal === undefined) {
     const signal = newSignal();
     data.signalCache = signal;
     data.request.onCancel?.(() => {
-      signal[signalAbort](new DOMException(MESSAGE_REQUEST_CANCELLED, "AbortError"));
+      signalAbort(signal, new DOMException(MESSAGE_REQUEST_CANCELLED, "AbortError"));
     });
     return signal;
   }
@@ -831,9 +831,7 @@ const MESSAGE_REQUEST_CANCELLED = "The request has been cancelled.";
 
 function abortRequest(request) {
   if (requestData(request).signalCache !== undefined) {
-    requestSignal(request)[signalAbort](
-      new DOMException(MESSAGE_REQUEST_CANCELLED, "AbortError"),
-    );
+    signalAbort(requestSignal(request), new DOMException(MESSAGE_REQUEST_CANCELLED, "AbortError"));
   } else {
     requestData(request).signalCache = false;
   }

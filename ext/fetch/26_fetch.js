@@ -367,12 +367,12 @@ function createResponseBodyStream(responseBodyRid, terminator) {
   const readable = readableStreamForRid(responseBodyRid);
 
   function onAbort() {
-    errorReadableStream(readable, terminator.reason);
+    errorReadableStream(readable, abortSignal.getAbortReason(terminator));
     core.tryClose(responseBodyRid);
   }
 
   // TODO(lucacasonato): clean up registration
-  terminator[abortSignal.add](onAbort);
+  abortSignal.addAbortAlgorithm(terminator, onAbort);
 
   return readable;
 }
@@ -408,7 +408,7 @@ async function mainFetch(req, recursive, terminator, inspectorCtx = null) {
     }
 
     const body = new InnerBody(req.blobUrlEntry.stream());
-    terminator[abortSignal.add](() => body.error(terminator.reason));
+    abortSignal.addAbortAlgorithm(terminator, () => body.error(abortSignal.getAbortReason(terminator)));
     processUrlList(req.urlList, req.urlListProcessed);
 
     return {
@@ -559,7 +559,7 @@ async function mainFetch(req, recursive, terminator, inspectorCtx = null) {
       core.tryClose(cancelHandleRid);
     }
   }
-  terminator[abortSignal.add](onAbort);
+  abortSignal.addAbortAlgorithm(terminator, onAbort);
   let resp;
   try {
     resp = await opFetchSend(requestRid);
@@ -572,7 +572,7 @@ async function mainFetch(req, recursive, terminator, inspectorCtx = null) {
         errorText: err && err.message ? String(err.message) : String(err),
       });
     }
-    if (terminator.aborted) return abortedNetworkError();
+    if (abortSignal.isAborted(terminator)) return abortedNetworkError();
     throw err;
   } finally {
     if (cancelHandleRid !== null) {
@@ -595,7 +595,7 @@ async function mainFetch(req, recursive, terminator, inspectorCtx = null) {
     const cause = resp.error[1];
     throw new TypeError("fetch failed", { cause: new Error(cause) });
   }
-  if (terminator.aborted) {
+  if (abortSignal.isAborted(terminator)) {
     // op_fetch_send resolved successfully, so the FetchResponseResource is already in
     // the resource table. The success path below either closes resp.responseRid
     // (redirect / null-body / HEAD / CONNECT) or hands it to createResponseBodyStream,
@@ -867,13 +867,13 @@ function fetch(input, init = undefined) {
       // 3.
       const request = toInnerRequest(requestObject);
       // 4.
-      if (requestObject.signal.aborted) {
+      if (abortSignal.isAborted(requestObject.signal)) {
         if (span) {
           // Handles this case here as this is the only case where `result` promise
           // is settled immediately.
-          updateSpanFromError(span, requestObject.signal.reason);
+          updateSpanFromError(span, abortSignal.getAbortReason(requestObject.signal));
         }
-        reject(abortFetch(request, null, requestObject.signal.reason));
+        reject(abortFetch(request, null, abortSignal.getAbortReason(requestObject.signal)));
         return;
       }
       // 7.
@@ -884,10 +884,10 @@ function fetch(input, init = undefined) {
       function onabort() {
         locallyAborted = true;
         reject(
-          abortFetch(request, responseObject, requestObject.signal.reason),
+          abortFetch(request, responseObject, abortSignal.getAbortReason(requestObject.signal)),
         );
       }
-      requestObject.signal[abortSignal.add](onabort);
+      abortSignal.addAbortAlgorithm(requestObject.signal, onabort);
 
       if (!requestObject.headers.has("Accept")) {
         ArrayPrototypePush(request.headerList, ["Accept", "*/*"]);
@@ -910,10 +910,10 @@ function fetch(input, init = undefined) {
                 abortFetch(
                   request,
                   responseObject,
-                  requestObject.signal.reason,
+                  abortSignal.getAbortReason(requestObject.signal),
                 ),
               );
-              requestObject.signal[abortSignal.remove](onabort);
+              abortSignal.removeAbortAlgorithm(requestObject.signal, onabort);
               return;
             }
             // 12.3.
@@ -922,7 +922,7 @@ function fetch(input, init = undefined) {
                 "Fetch failed: " + (response.error ?? "unknown error"),
               );
               reject(err);
-              requestObject.signal[abortSignal.remove](onabort);
+              abortSignal.removeAbortAlgorithm(requestObject.signal, onabort);
               return;
             }
             responseObject = fromInnerResponse(response, "immutable");
@@ -932,12 +932,12 @@ function fetch(input, init = undefined) {
             }
 
             resolve(responseObject);
-            requestObject.signal[abortSignal.remove](onabort);
+            abortSignal.removeAbortAlgorithm(requestObject.signal, onabort);
           },
         ),
         (err) => {
           reject(err);
-          requestObject.signal[abortSignal.remove](onabort);
+          abortSignal.removeAbortAlgorithm(requestObject.signal, onabort);
         },
       );
     });

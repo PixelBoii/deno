@@ -673,10 +673,10 @@ async function readFileAsync(
   let abortHandler: (rid: number) => void;
   const flagsNumber = stringToFlags(options!.flag, "options.flag");
   if (options?.signal) {
-    options.signal.throwIfAborted();
+    abortSignal.throwIfAborted(options.signal);
     cancelRid = core.createCancelHandle();
     abortHandler = () => core.tryClose(cancelRid as number);
-    options.signal[abortSignal.add](abortHandler);
+    abortSignal.addAbortAlgorithm(options.signal, abortHandler);
   }
 
   try {
@@ -688,10 +688,10 @@ async function readFileAsync(
     return data;
   } finally {
     if (options?.signal) {
-      options.signal[abortSignal.remove](abortHandler);
+      abortSignal.removeAbortAlgorithm(options.signal, abortHandler);
 
       // always throw the abort error when aborted
-      options.signal.throwIfAborted();
+      abortSignal.throwIfAborted(options.signal);
     }
   }
 }

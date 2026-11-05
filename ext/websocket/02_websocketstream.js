@@ -40,7 +40,7 @@ const { Deferred, writableStreamClose } = core.loadExtScript(
   "ext:deno_web/06_streams.js",
 );
 const { DOMException } = core.loadExtScript("ext:deno_web/01_dom_exception.js");
-const { add, remove } = core.loadExtScript("ext:deno_web/03_abort_signal.js");
+const { addAbortAlgorithm, removeAbortAlgorithm, isAborted, getAbortReason } = core.loadExtScript("ext:deno_web/03_abort_signal.js");
 const {
   fillHeaders,
   headerListFromHeaders,
@@ -160,16 +160,16 @@ class WebSocketStream {
       true,
     );
 
-    if (options.signal?.aborted) {
+    if ((options.signal == null ? undefined : isAborted(options.signal))) {
       core.close(cancelRid);
-      const err = options.signal.reason;
+      const err = getAbortReason(options.signal);
       this[_opened].reject(err);
       this[_closed].reject(err);
     } else {
       const abort = () => {
         core.close(cancelRid);
       };
-      options.signal?.[add](abort);
+      (options.signal == null ? undefined : addAbortAlgorithm(options.signal, abort));
       PromisePrototypeThen(
         op_ws_create(
           "new WebSocketStream()",
@@ -179,7 +179,7 @@ class WebSocketStream {
           headerListFromHeaders(headers),
         ),
         (create) => {
-          options.signal?.[remove](abort);
+          (options.signal == null ? undefined : removeAbortAlgorithm(options.signal, abort));
           if (this[_earlyClose]) {
             PromisePrototypeThen(
               op_ws_close(create.rid),
@@ -371,7 +371,7 @@ class WebSocketStream {
         (err) => {
           if (ObjectPrototypeIsPrototypeOf(core.InterruptedPrototype, err)) {
             // The signal was aborted.
-            err = options.signal.reason;
+            err = getAbortReason(options.signal);
           } else {
             core.tryClose(cancelRid);
             err = new WebSocketError(err.message);

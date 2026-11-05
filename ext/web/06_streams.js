@@ -97,10 +97,12 @@ const { structuredClone } = core.loadExtScript(
   "ext:deno_web/02_structured_clone.js",
 );
 const {
-  AbortSignalPrototype,
-  add,
+  isAbortSignal,
+  isAborted,
+  getAbortReason,
+  addAbortAlgorithm,
   newSignal,
-  remove,
+  removeAbortAlgorithm,
   signalAbort,
 } = core.loadExtScript("ext:deno_web/03_abort_signal.js");
 
@@ -3275,7 +3277,7 @@ async function fastPipeTo(
   if (signal !== undefined) {
     cancelRid = core.createCancelHandle();
     abortHandler = () => core.tryClose(cancelRid);
-    signal[add](abortHandler);
+    addAbortAlgorithm(signal, abortHandler);
   }
 
   try {
@@ -3285,8 +3287,8 @@ async function fastPipeTo(
     // otherwise surface the underlying resource error. We can't tell from here
     // whether the read (source) or write (sink) side failed, so we tear down
     // both ends, subject to the prevent* flags.
-    const error = signal !== undefined && signal.aborted
-      ? signal.reason
+    const error = signal !== undefined && isAborted(signal)
+      ? getAbortReason(signal)
       : annotateResourceStreamError(e);
     if (preventAbort === false) {
       try {
@@ -3303,7 +3305,7 @@ async function fastPipeTo(
     throw error;
   } finally {
     if (signal !== undefined) {
-      signal[remove](abortHandler);
+      removeAbortAlgorithm(signal, abortHandler);
       // `op_pipe` consumes the handle, but close defensively in case it errored
       // out before reaching that point. `tryClose` is a no-op if already gone.
       core.tryClose(cancelRid);
@@ -3359,7 +3361,7 @@ function readableStreamPipeTo(
   );
   assert(
     signal === undefined ||
-      ObjectPrototypeIsPrototypeOf(AbortSignalPrototype, signal),
+      isAbortSignal(signal),
   );
   assert(!isReadableStreamLocked(source));
   assert(!isWritableStreamLocked(dest));
@@ -3375,7 +3377,7 @@ function readableStreamPipeTo(
   const dstBacking = getWritableStreamResourceBacking(dest);
   if (
     srcBacking && dstBacking &&
-    (signal === undefined || !signal.aborted) &&
+    (signal === undefined || !isAborted(signal)) &&
     streamSlots(source)[_state] === "readable" && streamSlots(dest)[_state] === "writable"
   ) {
     return fastPipeTo(
@@ -3422,7 +3424,7 @@ function readableStreamPipeTo(
   let abortAlgorithm;
   if (signal) {
     abortAlgorithm = () => {
-      const error = signal.reason;
+      const error = getAbortReason(signal);
       /** @type {Array<() => Promise<void>>} */
       const actions = [];
       if (preventAbort === false) {
@@ -3450,11 +3452,11 @@ function readableStreamPipeTo(
       );
     };
 
-    if (signal.aborted) {
+    if (isAborted(signal)) {
       abortAlgorithm();
       return promise.promise;
     }
-    signal[add](abortAlgorithm);
+    addAbortAlgorithm(signal, abortAlgorithm);
   }
 
   // Persistent pump. Instead of allocating a `new Promise`, a read-request
@@ -3716,7 +3718,7 @@ function readableStreamPipeTo(
     readableStreamDefaultReaderRelease(reader);
 
     if (signal !== undefined) {
-      signal[remove](abortAlgorithm);
+      removeAbortAlgorithm(signal, abortAlgorithm);
     }
     if (isError) {
       promise.reject(error);
@@ -5217,7 +5219,7 @@ function writableStreamAbort(stream, reason) {
   if (state === "closed" || state === "errored") {
     return PromiseResolve(undefined);
   }
-  streamSlots(streamSlots(stream)[_controller])[_signal][signalAbort](reason);
+  signalAbort(streamSlots(streamSlots(stream)[_controller])[_signal], reason);
   state = streamSlots(stream)[_state];
   if (state === "closed" || state === "errored") {
     return PromiseResolve(undefined);

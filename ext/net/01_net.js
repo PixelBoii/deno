@@ -76,7 +76,7 @@ async function write(rid, data) {
 async function resolveDns(query, recordType, options) {
   const signal = options?.signal;
   if (signal) {
-    signal.throwIfAborted();
+    abortSignal.throwIfAborted(signal);
   }
   let cancelRid;
   let abortHandler;
@@ -85,7 +85,7 @@ async function resolveDns(query, recordType, options) {
     if (signal) {
       cancelRid = createCancelHandle();
       abortHandler = () => core.tryClose(cancelRid);
-      signal[abortSignal.add](abortHandler);
+      abortSignal.addAbortAlgorithm(signal, abortHandler);
     }
 
     const res = await op_dns_resolve({
@@ -102,12 +102,12 @@ async function resolveDns(query, recordType, options) {
       core.tryClose(cancelRid);
     }
     if (abortHandler !== undefined) {
-      signal[abortSignal.remove](abortHandler);
+      abortSignal.removeAbortAlgorithm(signal, abortHandler);
     }
 
     if (signal) {
       // always throw the abort error when aborted
-      signal.throwIfAborted();
+      abortSignal.throwIfAborted(signal);
     }
   }
 }
@@ -694,7 +694,7 @@ async function connect(args) {
     case "tcp": {
       const signal = args?.signal;
       if (signal) {
-        signal.throwIfAborted();
+        abortSignal.throwIfAborted(signal);
       }
       const port = validatePort(args.port);
       let cancelRid;
@@ -704,7 +704,7 @@ async function connect(args) {
         if (signal) {
           cancelRid = createCancelHandle();
           abortHandler = () => core.tryClose(cancelRid);
-          signal[abortSignal.add](abortHandler);
+          abortSignal.addAbortAlgorithm(signal, abortHandler);
         }
 
         const { 0: rid, 1: localAddr, 2: remoteAddr } =
@@ -732,10 +732,10 @@ async function connect(args) {
           core.tryClose(cancelRid);
         }
         if (abortHandler !== undefined) {
-          signal[abortSignal.remove](abortHandler);
+          abortSignal.removeAbortAlgorithm(signal, abortHandler);
         }
         if (signal) {
-          signal.throwIfAborted();
+          abortSignal.throwIfAborted(signal);
         }
       }
     }
