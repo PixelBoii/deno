@@ -6,14 +6,18 @@ use std::ffi::c_void;
 use std::future::Future;
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
+use std::rc::Rc;
 
+use deno_error::JsErrorBox;
 use deno_error::JsErrorClass;
 use serde::Deserialize;
 use serde_v8::V8Sliceable;
 use serde_v8::from_v8;
 
 use super::op_driver::OpDriver;
+use super::op_driver::OpResult;
 use super::op_driver::OpScheduling;
+use super::op_driver::V8OpMappingContext;
 use super::op_driver::V8RetValMapper;
 use crate::ops::*;
 
@@ -66,6 +70,121 @@ pub fn map_async_op_fallible<R: 'static, E: JsErrorClass + 'static>(
     op,
     rv_map,
   )
+}
+
+fn native_op_promise<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+) -> (
+  Rc<crate::runtime::ContextState>,
+  i32,
+  v8::Local<'s, v8::Promise>,
+) {
+  let state = crate::runtime::JsRealm::state_from_scope(scope);
+  let mut id = state.next_native_promise_id.get();
+  while state.native_async_promises.borrow().contains_key(&id) {
+    id = id.checked_sub(1).unwrap_or(-1);
+  }
+  state
+    .next_native_promise_id
+    .set(id.checked_sub(1).unwrap_or(-1));
+  let resolver = v8::PromiseResolver::new(scope).unwrap();
+  let promise = resolver.get_promise(scope);
+  state
+    .native_async_promises
+    .borrow_mut()
+    .insert(id, v8::Global::new(scope, resolver));
+  (state, id, promise)
+}
+
+/// Native Web IDL promises belong to the receiver's relevant realm, entered
+/// after argument conversion. Their actual futures still use that realm's op
+/// driver; completion resolves the native resolver without a JS async stub.
+pub fn map_native_async_op_infallible<'s, R: 'static>(
+  scope: &mut v8::PinScope<'s, '_>,
+  ctx: &OpCtx,
+  op: impl Future<Output = R> + 'static,
+  rv_map: V8RetValMapper<R>,
+) -> v8::Local<'s, v8::Promise> {
+  let (state, id, promise) = native_op_promise(scope);
+  let immediate = state.pending_ops.submit_op_infallible_scheduling(
+    OpScheduling::Deferred,
+    ctx.id,
+    id,
+    op,
+    rv_map,
+  );
+  debug_assert!(immediate.is_none());
+  promise
+}
+
+pub fn map_native_async_op_fallible<
+  's,
+  R: 'static,
+  E: JsErrorClass + 'static,
+>(
+  scope: &mut v8::PinScope<'s, '_>,
+  ctx: &OpCtx,
+  op: impl Future<Output = Result<R, E>> + 'static,
+  rv_map: V8RetValMapper<R>,
+) -> v8::Local<'s, v8::Promise> {
+  let (state, id, promise) = native_op_promise(scope);
+  let immediate = state.pending_ops.submit_op_fallible_scheduling(
+    OpScheduling::Deferred,
+    ctx.id,
+    id,
+    op,
+    rv_map,
+  );
+  debug_assert!(immediate.is_none());
+  promise
+}
+
+fn native_ready_promise<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+  result: Result<v8::Local<'s, v8::Value>, v8::Local<'s, v8::Value>>,
+) -> v8::Local<'s, v8::Promise> {
+  if let Ok(value) = result
+    && let Ok(promise) = v8::Local::<v8::Promise>::try_from(value)
+  {
+    // The backend already owns this promise. Return it immediately so a
+    // rejection handler can be attached before the next microtask checkpoint.
+    return promise;
+  }
+  let resolver = v8::PromiseResolver::new(scope).unwrap();
+  match result {
+    Ok(value) => {
+      resolver.resolve(scope, value);
+    }
+    Err(error) => {
+      resolver.reject(scope, error);
+    }
+  }
+  resolver.get_promise(scope)
+}
+
+pub fn map_native_ready_op_infallible<'s, R: 'static>(
+  scope: &mut v8::PinScope<'s, '_>,
+  _ctx: &OpCtx,
+  result: R,
+  rv_map: V8RetValMapper<R>,
+) -> v8::Local<'s, v8::Promise> {
+  let result =
+    OpResult::<V8OpMappingContext>::new_value(result, rv_map).unwrap(scope);
+  native_ready_promise(scope, result)
+}
+
+pub fn map_native_ready_op_fallible<'s, R: 'static, E: JsErrorClass + 'static>(
+  scope: &mut v8::PinScope<'s, '_>,
+  _ctx: &OpCtx,
+  result: Result<R, E>,
+  rv_map: V8RetValMapper<R>,
+) -> v8::Local<'s, v8::Promise> {
+  let result = match result {
+    Ok(value) => OpResult::<V8OpMappingContext>::new_value(value, rv_map),
+    Err(error) => OpResult::Err(JsErrorBox::from_err(error)),
+  }
+  .unwrap(scope);
+  native_ready_promise(scope, result)
 }
 
 macro_rules! try_integer_some {

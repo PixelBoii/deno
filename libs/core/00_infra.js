@@ -98,7 +98,12 @@
   registerErrorClass("TypeError", TypeError);
   registerErrorClass("URIError", URIError);
 
-  function buildCustomError(className, message, additionalProperties) {
+  function buildCustomError(
+    className,
+    message,
+    additionalProperties,
+    captureStack = true,
+  ) {
     let error;
     try {
       error = errorMap[className]?.(message);
@@ -109,7 +114,7 @@
     }
     // Strip buildCustomError() calls from stack trace
     if (typeof error == "object") {
-      ErrorCaptureStackTrace(error, buildCustomError);
+      if (captureStack) ErrorCaptureStackTrace(error, buildCustomError);
       if (additionalProperties) {
         const keys = [];
         for (const property of new SafeArrayIterator(additionalProperties)) {

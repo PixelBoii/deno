@@ -69,10 +69,28 @@ pub fn enable_native_host_exceptions(scope: &mut v8::PinScope) {
   global.set_private(scope, key, enabled.into());
 }
 
+pub(crate) fn native_host_exceptions_enabled(scope: &mut v8::PinScope) -> bool {
+  let name =
+    v8::String::new(scope, "Deno.core.nativeHostExceptionsEnabled").unwrap();
+  let key = v8::Private::for_api(scope, Some(name));
+  let global = scope.get_current_context().global(scope);
+  global
+    .get_private(scope, key)
+    .is_some_and(|value| value.is_true())
+}
+
 // V8 API wrappers have a dedicated native-error classification. DOMException
 // uses this real cppgc host instance and its private IDL state, rather than
 // invoking the JavaScript Error constructor during host object construction.
 struct NativeHostException;
+pub(crate) fn is_native_host_exception(
+  scope: &mut v8::PinScope,
+  value: v8::Local<v8::Value>,
+) -> bool {
+  crate::cppgc::try_unwrap_cppgc_object::<NativeHostException>(scope, value)
+    .is_some()
+}
+
 unsafe impl crate::cppgc::GarbageCollected for NativeHostException {
   fn trace(&self, _: &mut v8::cppgc::Visitor) {}
   fn get_name(&self) -> &'static std::ffi::CStr {
@@ -87,13 +105,7 @@ pub fn op_create_host_exception<'s>(
   scope: &mut v8::PinScope<'s, '_>,
   receiver: v8::Local<'s, v8::Object>,
 ) -> Option<v8::Local<'s, v8::Object>> {
-  let name = v8::String::new(scope, "Deno.core.nativeHostExceptionsEnabled")?;
-  let key = v8::Private::for_api(scope, Some(name));
-  let global = scope.get_current_context().global(scope);
-  if !global
-    .get_private(scope, key)
-    .is_some_and(|value| value.is_true())
-  {
+  if !native_host_exceptions_enabled(scope) {
     return None;
   }
   let prototype = receiver.get_prototype(scope)?;

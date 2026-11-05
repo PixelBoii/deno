@@ -997,6 +997,7 @@ impl JsRuntime {
         .borrow_mut()
         .retain(|r| r.context() != realm.context());
       realm.0.context_state.pending_ops.shutdown();
+      realm.0.context_state.native_async_promises.borrow_mut().clear();
       state_rc.failed_realms.borrow_mut().push(realm);
       return Err(err);
     }
@@ -3446,6 +3447,7 @@ impl JsRuntimeState {
       .chain(self.failed_realms.borrow().iter())
     {
       realm.0.context_state.pending_ops.shutdown();
+      realm.0.context_state.native_async_promises.borrow_mut().clear();
     }
   }
 
@@ -3852,11 +3854,13 @@ impl JsRuntime {
 
     let mut args: SmallVec<[v8::Local<v8::Value>; 32]> =
       SmallVec::with_capacity(32);
+    let mut processed = 0;
+    let mut has_native_ops = false;
 
     // Completed async ops as (promiseId, isOk, res) triplets.
     loop {
       // Ensure there is room for the next (promiseId, isOk, res) triplet
-      if args.len() + 3 > MAX_VEC_SIZE_FOR_OPS {
+      if processed >= MAX_VEC_SIZE_FOR_OPS / 3 {
         cx.waker().wake_by_ref();
         break;
       }
@@ -3866,6 +3870,20 @@ impl JsRuntime {
       else {
         break;
       };
+      processed += 1;
+
+      let native = context_state
+        .native_async_promises
+        .borrow_mut()
+        .remove(&promise_id);
+      if native.is_some() && !args.is_empty() {
+        // Preserve completion order when native and legacy ops share a tick.
+        // This callback only settles promises; checkpoints run after returning.
+        if !Self::dispatch_op_results(scope, context_state, &args)? {
+          return Ok(false);
+        }
+        args.clear();
+      }
 
       let res = res.unwrap(scope);
 
@@ -3884,6 +3902,15 @@ impl JsRuntime {
       context_state
         .activity_traces
         .complete(RuntimeActivityType::AsyncOp, promise_id as _);
+      if let Some(resolver) = native {
+        let resolver = v8::Local::new(scope, &resolver);
+        match res {
+          Ok(value) => resolver.resolve(scope, value),
+          Err(error) => resolver.reject(scope, error),
+        };
+        has_native_ops = true;
+        continue;
+      }
       args.push(v8::Integer::new(scope, promise_id).into());
       args.push(v8::Boolean::new(scope, res.is_ok()).into());
       args.push(res.unwrap_or_else(std::convert::identity));
@@ -3892,16 +3919,24 @@ impl JsRuntime {
     // Skip the call if no ops completed.
     let has_ops = !args.is_empty();
     if !has_ops {
-      return Ok(false);
+      return Ok(has_native_ops);
     }
 
+    Self::dispatch_op_results(scope, context_state, &args)
+  }
+
+  fn dispatch_op_results<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    context_state: &ContextState,
+    args: &[v8::Local<'s, v8::Value>],
+  ) -> Result<bool, Box<JsError>> {
     let undefined: v8::Local<v8::Value> = v8::undefined(scope).into();
 
     v8::tc_scope!(let tc_scope, scope);
 
     let tick_cb = context_state.js_event_loop_tick_cb.borrow();
     let tick_fn = tick_cb.as_ref().unwrap().open(tc_scope);
-    tick_fn.call(tc_scope, undefined, args.as_slice());
+    tick_fn.call(tc_scope, undefined, args);
 
     if let Some(exception) = tc_scope.exception() {
       return exception_to_err_result(tc_scope, exception, false, true);
@@ -3910,7 +3945,7 @@ impl JsRuntime {
       return Ok(false);
     }
 
-    Ok(has_ops)
+    Ok(true)
   }
 
   /// Dispatch "rejectionhandled" events for promises that were previously

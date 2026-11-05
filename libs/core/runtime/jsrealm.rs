@@ -2,6 +2,7 @@
 
 use std::cell::Cell;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hash::BuildHasherDefault;
 use std::hash::Hasher;
@@ -97,6 +98,11 @@ pub struct ContextState {
     RefCell<HashSet<i32, BuildHasherDefault<IdentityHasher>>>,
   pub(crate) activity_traces: RuntimeActivityTraces,
   pub(crate) pending_ops: Rc<OpDriverImpl>,
+  // Native Web IDL operations use receiver-realm promises rather than the
+  // JavaScript async-op ring. Negative IDs keep the two queues disjoint.
+  pub(crate) native_async_promises:
+    RefCell<HashMap<i32, v8::Global<v8::PromiseResolver>>>,
+  pub(crate) next_native_promise_id: Cell<i32>,
   /// Consecutive ticks with a pending module but no reported top-level await.
   pub(crate) tla_stall_retries: Cell<u32>,
   // We don't explicitly re-read this prop but need the slice to live alongside
@@ -221,6 +227,8 @@ impl ContextState {
       fast_ops_upgraded: Cell::new(false),
       deferred_fast_ops: RefCell::new(None),
       pending_ops: op_driver,
+      native_async_promises: Default::default(),
+      next_native_promise_id: Cell::new(-1),
       tla_stall_retries: Cell::new(0),
       task_spawner_factory: Default::default(),
       user_timer: Default::default(),

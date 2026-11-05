@@ -39,7 +39,7 @@ pub(crate) fn generate_dispatch_slow_call(
   generator_state: &mut GeneratorState,
   signature: &ParsedSignature,
   mut input_index: usize,
-) -> Result<TokenStream, V8SignatureMappingError> {
+) -> Result<(TokenStream, TokenStream), V8SignatureMappingError> {
   // Collect virtual arguments in a deferred list that we compute at the very end. This allows us to borrow
   // the scope/opstate in the intermediate stages.
   let mut args = TokenStream::new();
@@ -68,9 +68,19 @@ pub(crate) fn generate_dispatch_slow_call(
     }
   }
 
-  args.extend(deferred);
-  args.extend(call(generator_state, &signature.ret_val));
-  Ok(args)
+  deferred.extend(call(generator_state, &signature.ret_val));
+  Ok((args, deferred))
+}
+
+pub(crate) fn with_relevant_realm(
+  generator_state: &mut GeneratorState,
+) -> TokenStream {
+  generator_state.needs_args = true;
+  generator_state.needs_scope = true;
+  gs_quote!(generator_state(scope, fn_args) => {
+    let op2_relevant_context = #fn_args.this().get_creation_context(&mut #scope).unwrap();
+    let mut #scope = deno_core::v8::ContextScope::new(&mut #scope, op2_relevant_context);
+  })
 }
 
 pub(crate) fn generate_dispatch_slow(
@@ -80,7 +90,14 @@ pub(crate) fn generate_dispatch_slow(
 ) -> Result<TokenStream, V8SignatureMappingError> {
   let mut output = TokenStream::new();
 
-  let args = generate_dispatch_slow_call(generator_state, signature, 0)?;
+  let (prepare, invoke) = generate_dispatch_slow_call(generator_state, signature, 0)?;
+  let args = if generator_state.webidl && generator_state.needs_self {
+    output.extend(prepare);
+    output.extend(with_relevant_realm(generator_state));
+    invoke
+  } else {
+    quote! { #prepare #invoke }
+  };
 
   output.extend(gs_quote!(generator_state(result) => (let #result = {
     #args
@@ -797,13 +814,24 @@ pub fn from_arg(
       quote! {
         #default
         #alias
-        let #arg_ident = match <#ty as deno_core::webidl::WebIdlConverter>::convert(
-          &mut #scope,
-          #arg_ident,
-          #prefix.into(),
-          deno_core::webidl::ContextFn::new_borrowed(&|| std::borrow::Cow::Borrowed(#context)),
-          &#options,
-        ) {
+        let op2_conversion_result = {
+          deno_core::v8::tc_scope!(let conversion_scope, &mut #scope);
+          let result = <#ty as deno_core::webidl::WebIdlConverter>::convert(
+            conversion_scope,
+            #arg_ident,
+            #prefix.into(),
+            deno_core::webidl::ContextFn::new_borrowed(&|| std::borrow::Cow::Borrowed(#context)),
+            &#options,
+          );
+          if conversion_scope.has_caught() {
+            // A conversion may invoke an author getter/valueOf. Preserve that
+            // exact exception instead of replacing it with a binding TypeError.
+            conversion_scope.rethrow();
+            return 1;
+          }
+          result
+        };
+        let #arg_ident = match op2_conversion_result {
           Ok(t) => t,
           Err(#err) => {
             #throw_exception;
@@ -1071,7 +1099,7 @@ pub fn call(
       #moves
       #call.await
     })
-  } else if generator_state.is_fake_async {
+  } else if generator_state.is_fake_async && !generator_state.native_async {
     quote!(std::future::ready(#call))
   } else {
     call

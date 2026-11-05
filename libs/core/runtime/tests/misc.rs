@@ -2539,6 +2539,26 @@ async fn test_native_webidl_receiver_errors() {
     fn value(&self) -> u32 { 7 }
     async fn later(&self) -> u32 { 7 }
     async fn second(&self) -> u32 { 11 }
+    async fn pending(&self) -> u32 {
+      tokio::task::yield_now().await;
+      17
+    }
+    async fn converted(&self, #[webidl] value: u32) -> u32 { value }
+    #[async_method(fake)]
+    fn ready(&self, scope: &mut v8::PinScope) -> v8::Global<v8::Promise> {
+      let resolver = v8::PromiseResolver::new(scope).unwrap();
+      let value = v8::Integer::new(scope, 19);
+      resolver.resolve(scope, value.into());
+      v8::Global::new(scope, resolver.get_promise(scope))
+    }
+    #[async_method(fake)]
+    fn rejected(&self, scope: &mut v8::PinScope) -> v8::Global<v8::Promise> {
+      let resolver = v8::PromiseResolver::new(scope).unwrap();
+      let message = v8::String::new(scope, "backend rejection").unwrap();
+      let error = v8::Exception::type_error(scope, message);
+      resolver.reject(scope, error);
+      v8::Global::new(scope, resolver.get_promise(scope))
+    }
   }
   #[op2]
   impl NodeReceiver {
@@ -2548,7 +2568,12 @@ async fn test_native_webidl_receiver_errors() {
     #[fast]
     fn value(&self) -> u32 { 9 }
   }
-  extension!(receivers, objects = [BrowserReceiver, NodeReceiver]);
+  #[op2]
+  async fn op_legacy_pending() -> u32 {
+    tokio::task::yield_now().await;
+    23
+  }
+  extension!(receivers, ops = [op_legacy_pending], objects = [BrowserReceiver, NodeReceiver]);
   let mut runtime = JsRuntime::new(RuntimeOptions {
     extensions: vec![receivers::init()],
     ..Default::default()
@@ -2568,6 +2593,7 @@ async fn test_native_webidl_receiver_errors() {
     let complete=0;
     const later=globalThis.savedNativeLater??BrowserReceiver.prototype.later;
     const second=BrowserReceiver.prototype.second;
+    const pending=BrowserReceiver.prototype.pending,ready=BrowserReceiver.prototype.ready,converted=BrowserReceiver.prototype.converted;
     check(later.length===0&&Function.prototype.toString.call(later).includes('[native code]'));
     for(const receiver of [{},Object.create(BrowserReceiver.prototype),node,new Proxy(browser,{})]) {
       const promise=later.call(receiver);
@@ -2581,10 +2607,20 @@ async fn test_native_webidl_receiver_errors() {
     Object.setPrototypeOf(browser,null);
     later.call(browser).then(value=>{check(value===7);complete++;});
     second.call(browser).then(value=>{check(value===11);complete++;});
+    const pendingPromise=pending.call(browser);
+    check(pendingPromise instanceof Promise&&Reflect.ownKeys(pendingPromise).length===0);
+    pendingPromise.then(value=>{check(value===17);complete++;});
+    ready.call(browser).then(value=>{check(value===19);complete++;});
+    BrowserReceiver.prototype.rejected.call(browser).catch(error=>{check(error instanceof TypeError&&error.message==='backend rejection');complete++;});
+    Deno.core.ops.op_legacy_pending().then(value=>{check(value===23);complete++;});
+    converted.call(browser,{valueOf(){check(BrowserReceiver.prototype.value.call(browser)===7);return 29;}}).then(value=>{check(value===29);complete++;});
+    const original=new Error('author conversion'),originalStack=original.stack;
+    converted.call(browser,{valueOf(){throw original;}}).catch(error=>{check(error===original&&error.stack===originalStack);complete++;});
+    converted.call(browser,Symbol()).catch(error=>{check(error instanceof TypeError);complete++;});
   "#;
   runtime.execute_script("native-receiver-errors", CHECK_RECEIVERS).unwrap();
   runtime.run_event_loop(Default::default()).await.unwrap();
-  runtime.execute_script("receiver-complete", "check(complete===6)").unwrap();
+  runtime.execute_script("receiver-complete", "check(complete===13)").unwrap();
   drop(runtime);
 
   // The native entry's traced JS stub and OpCtx external must also survive a
@@ -2603,7 +2639,7 @@ async fn test_native_webidl_receiver_errors() {
   });
   runtime.execute_script("native-receiver-errors", CHECK_RECEIVERS).unwrap();
   runtime.run_event_loop(Default::default()).await.unwrap();
-  runtime.execute_script("receiver-complete", "check(complete===6)").unwrap();
+  runtime.execute_script("receiver-complete", "check(complete===13)").unwrap();
 }
 
 #[test]

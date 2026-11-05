@@ -46,6 +46,7 @@ pub struct GeneratorState {
   /// Type of the self argument
   pub self_ty: Ident,
   pub webidl: bool,
+  pub native_async: bool,
 
   pub moves: Vec<TokenStream>,
 

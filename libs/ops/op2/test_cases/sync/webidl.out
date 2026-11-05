@@ -48,15 +48,24 @@ const fn op_webidl() -> ::deno_core::_ops::OpDecl {
             );
             let result = {
                 let arg0 = args.get(0usize as i32);
-                let arg0 = match <String as deno_core::webidl::WebIdlConverter>::convert(
-                    &mut scope,
-                    arg0,
-                    "Failed to execute 'UNINIT.op_webidl'".into(),
-                    deno_core::webidl::ContextFn::new_borrowed(
-                        &|| std::borrow::Cow::Borrowed("Argument 0"),
-                    ),
-                    &Default::default(),
-                ) {
+                let op2_conversion_result = {
+                    deno_core::v8::tc_scope!(let conversion_scope, & mut scope);
+                    let result = <String as deno_core::webidl::WebIdlConverter>::convert(
+                        conversion_scope,
+                        arg0,
+                        "Failed to execute 'UNINIT.op_webidl'".into(),
+                        deno_core::webidl::ContextFn::new_borrowed(
+                            &|| std::borrow::Cow::Borrowed("Argument 0"),
+                        ),
+                        &Default::default(),
+                    );
+                    if conversion_scope.has_caught() {
+                        conversion_scope.rethrow();
+                        return 1;
+                    }
+                    result
+                };
+                let arg0 = match op2_conversion_result {
                     Ok(t) => t,
                     Err(arg0_err) => {
                         deno_core::_ops::throw_error_js_error_class(
@@ -67,15 +76,24 @@ const fn op_webidl() -> ::deno_core::_ops::OpDecl {
                     }
                 };
                 let arg1 = args.get(1usize as i32);
-                let arg1 = match <u32 as deno_core::webidl::WebIdlConverter>::convert(
-                    &mut scope,
-                    arg1,
-                    "Failed to execute 'UNINIT.op_webidl'".into(),
-                    deno_core::webidl::ContextFn::new_borrowed(
-                        &|| std::borrow::Cow::Borrowed("Argument 1"),
-                    ),
-                    &Default::default(),
-                ) {
+                let op2_conversion_result = {
+                    deno_core::v8::tc_scope!(let conversion_scope, & mut scope);
+                    let result = <u32 as deno_core::webidl::WebIdlConverter>::convert(
+                        conversion_scope,
+                        arg1,
+                        "Failed to execute 'UNINIT.op_webidl'".into(),
+                        deno_core::webidl::ContextFn::new_borrowed(
+                            &|| std::borrow::Cow::Borrowed("Argument 1"),
+                        ),
+                        &Default::default(),
+                    );
+                    if conversion_scope.has_caught() {
+                        conversion_scope.rethrow();
+                        return 1;
+                    }
+                    result
+                };
+                let arg1 = match op2_conversion_result {
                     Ok(t) => t,
                     Err(arg1_err) => {
                         deno_core::_ops::throw_error_js_error_class(

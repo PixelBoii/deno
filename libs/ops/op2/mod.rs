@@ -302,6 +302,10 @@ pub(crate) fn generate_op2(
     promise_id,
     self_ty,
     webidl: config.webidl,
+    native_async: config.webidl
+      && config.method.is_some()
+      && (signature.ret_val.is_async() || config.fake_async)
+      && !config.promise_id,
     moves: vec![],
     needs_retval: false,
     needs_scope: false,
@@ -340,7 +344,7 @@ pub(crate) fn generate_op2(
       .map_err(|e| Op2Error::from(e).with_default_span(sig_span))?
   };
   let is_async = signature.ret_val.is_async() || config.fake_async;
-  let is_reentrant = config.reentrant;
+  let is_reentrant = config.reentrant || config.webidl;
   let no_side_effect = config.no_side_effects;
 
   let mut fast_generator_state = base_generator_state.clone();
@@ -448,6 +452,7 @@ pub(crate) fn generate_op2(
 
   let symbol_for = config.symbol;
   let constructable = config.constructable;
+  let native_async = base_generator_state.native_async;
 
   let webidl_receiver =
     if config.webidl && base_generator_state.needs_self && is_async {
@@ -462,6 +467,7 @@ pub(crate) fn generate_op2(
           ::deno_core::_ops::#unwrap::<#self_ty>(scope, receiver).is_some()
         }),
         webidl_receiver_error: Some(#message),
+        webidl_native_async: #native_async,
       }
     } else {
       quote! {}

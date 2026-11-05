@@ -838,8 +838,23 @@ fn async_webidl_method_callback<'s, 'i>(
     .unwrap()
     .try_cast::<v8::Function>()
     .unwrap();
-  let values: Vec<_> = (0..args.length()).map(|i| args.get(i)).collect();
-  if let Some(result) = stub.call(scope, args.this().into(), &values) {
+  let mut values: Vec<_> = (0..args.length()).map(|i| args.get(i)).collect();
+  if metadata.webidl_native_async {
+    // The original callback retains the internal promise-ID argument layout;
+    // native Web IDL completion allocates its actual ID in the receiver realm.
+    values.insert(0, v8::Integer::new(scope, 0).into());
+    v8::tc_scope!(let scope, scope);
+    if let Some(result) = stub.call(scope, args.this().into(), &values) {
+      rv.set(result);
+    } else if let Some(error) = scope.exception() {
+      // Conversion errors are still rejected in the method's realm, and an
+      // author's original exception is preserved unchanged.
+      scope.reset();
+      let resolver = v8::PromiseResolver::new(scope).unwrap();
+      resolver.reject(scope, error);
+      rv.set(resolver.get_promise(scope).into());
+    }
+  } else if let Some(result) = stub.call(scope, args.this().into(), &values) {
     rv.set(result);
   }
 }
@@ -878,9 +893,13 @@ fn install_async_method<'s, 'i>(
       .unwrap();
     return;
   }
-  let stub = set_up_async_stub_fn
-    .call(scope, undefined.into(), &[method_key.into(), op_fn.into()])
-    .unwrap();
+  let stub = if op_ctx.decl().metadata.webidl_native_async {
+    op_fn.into()
+  } else {
+    set_up_async_stub_fn
+      .call(scope, undefined.into(), &[method_key.into(), op_fn.into()])
+      .unwrap()
+  };
   let external =
     v8::External::new(scope, op_ctx as *const OpCtx as *mut c_void);
   // Keep the traced JS bookkeeping in its realm's private storage. Native

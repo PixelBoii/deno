@@ -71,6 +71,7 @@ pub struct OpMetadata {
     for<'s, 'i> fn(&mut v8::PinScope<'s, 'i>, v8::Local<'s, v8::Value>) -> bool,
   >,
   pub webidl_receiver_error: Option<&'static str>,
+  pub webidl_native_async: bool,
 }
 
 impl OpMetadata {
@@ -80,6 +81,7 @@ impl OpMetadata {
       sanitizer_fix: None,
       webidl_receiver: None,
       webidl_receiver_error: None,
+      webidl_native_async: false,
     }
   }
 }

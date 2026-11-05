@@ -15,6 +15,7 @@ use super::dispatch_slow::with_fn_args;
 use super::dispatch_slow::with_opctx;
 use super::dispatch_slow::with_opstate;
 use super::dispatch_slow::with_parts;
+use super::dispatch_slow::with_relevant_realm;
 use super::dispatch_slow::with_required_check;
 use super::dispatch_slow::with_retval;
 use super::dispatch_slow::with_scope;
@@ -40,12 +41,24 @@ pub(crate) fn map_async_return_type(
   let (mapper, return_value_immediate) = if let Some(ret_val) = fut {
     if let Some(res_ret_val) = ret_val.unwrap_result() {
       (
-        quote!(map_async_op_fallible),
+        if generator_state.native_async && generator_state.is_fake_async {
+          quote!(map_native_ready_op_fallible)
+        } else if generator_state.native_async {
+          quote!(map_native_async_op_fallible)
+        } else {
+          quote!(map_async_op_fallible)
+        },
         return_value_result(generator_state, res_ret_val.arg())?,
       )
     } else {
       (
-        quote!(map_async_op_infallible),
+        if generator_state.native_async && generator_state.is_fake_async {
+          quote!(map_native_ready_op_infallible)
+        } else if generator_state.native_async {
+          quote!(map_native_async_op_infallible)
+        } else {
+          quote!(map_async_op_infallible)
+        },
         return_value_infallible(generator_state, ret_val.arg())?,
       )
     }
@@ -71,8 +84,15 @@ pub(crate) fn generate_dispatch_async(
 
   // Set input_index = 1 when we don't want promise ID as the first arg.
   let input_index = if config.promise_id { 0 } else { 1 };
-  let args =
+  let (prepare, invoke) =
     generate_dispatch_slow_call(generator_state, signature, input_index)?;
+  let args = if generator_state.native_async {
+    output.extend(prepare);
+    output.extend(with_relevant_realm(generator_state));
+    invoke
+  } else {
+    quote! { #prepare #invoke }
+  };
 
   // Always need context and args
   generator_state.needs_opctx = true;
@@ -102,7 +122,19 @@ pub(crate) fn generate_dispatch_async(
   if signature.ret_val.unwrap_result().is_some()
     && !generator_state.is_fake_async
   {
-    let exception = throw_exception(generator_state);
+    let exception = if generator_state.native_async {
+      generator_state.needs_retval = true;
+      generator_state.needs_parts = true;
+      gs_quote!(generator_state(scope, retval) => {
+        let exception = deno_core::error::to_v8_error(&mut #scope, &err);
+        let resolver = deno_core::v8::PromiseResolver::new(&mut #scope).unwrap();
+        resolver.reject(&mut #scope, exception);
+        #retval.set(resolver.get_promise(&mut #scope).into());
+        return 1;
+      })
+    } else {
+      throw_exception(generator_state)
+    };
     output.extend(gs_quote!(generator_state(result) => {
       let #result = match #result {
         Ok(#result) => #result,
@@ -114,7 +146,16 @@ pub(crate) fn generate_dispatch_async(
     }));
   }
 
-  if config.async_lazy || config.async_deferred {
+  if generator_state.native_async {
+    generator_state.needs_retval = true;
+    generator_state.needs_parts = true;
+    output.extend(gs_quote!(generator_state(opctx, scope, result, retval) => {
+      let promise = deno_core::_ops::#mapper(&mut #scope, #opctx, #result, |#scope, #result| {
+        #return_value
+      });
+      #retval.set(promise.into());
+    }));
+  } else if config.async_lazy || config.async_deferred {
     let lazy = config.async_lazy;
     let deferred = config.async_deferred;
     output.extend(gs_quote!(generator_state(promise_id, fn_args, result, opctx, scope) => {
@@ -136,7 +177,11 @@ pub(crate) fn generate_dispatch_async(
       }
     }));
   }
-  output.extend(quote!(return 2;));
+  if generator_state.native_async && generator_state.is_fake_async {
+    output.extend(quote!(return 0;));
+  } else {
+    output.extend(quote!(return 2;));
+  }
 
   let with_opstate =
     if generator_state.needs_opstate | generator_state.needs_stack_trace {

@@ -396,6 +396,24 @@ pub fn to_v8_error<'s, 'i>(
   scope: &mut v8::PinScope<'s, 'i>,
   error: &dyn JsErrorClass,
 ) -> v8::Local<'s, v8::Value> {
+  let native = crate::ops_builtin_v8::native_host_exceptions_enabled(scope);
+  let class_name = error.get_class();
+  if native
+    && error.get_additional_properties().next().is_none()
+    && matches!(
+      class_name.as_ref(),
+      "Error" | "TypeError" | "RangeError" | "ReferenceError" | "SyntaxError"
+    )
+  {
+    let message = v8::String::new(scope, &error.get_message()).unwrap();
+    return match class_name.as_ref() {
+      "TypeError" => v8::Exception::type_error(scope, message),
+      "RangeError" => v8::Exception::range_error(scope, message),
+      "ReferenceError" => v8::Exception::reference_error(scope, message),
+      "SyntaxError" => v8::Exception::syntax_error(scope, message),
+      _ => v8::Exception::error(scope, message),
+    };
+  }
   v8::tc_scope!(let tc_scope, scope);
 
   let cb = JsRealm::exception_state_from_scope(tc_scope)
@@ -430,10 +448,37 @@ pub fn to_v8_error<'s, 'i>(
     );
   }
 
+  if native {
+    if args.len() == 2 {
+      args.push(v8::undefined(tc_scope).into());
+    }
+    // Native host exceptions and custom constructors retain their own error
+    // representation. The legacy Deno capture policy stays in Deno realms.
+    args.push(v8::Boolean::new(tc_scope, false).into());
+  }
+
   let maybe_exception = cb.call(tc_scope, this, &args);
 
   match maybe_exception {
-    Some(exception) => exception,
+    Some(exception) => {
+      if native
+        && crate::ops_builtin_v8::is_native_host_exception(tc_scope, exception)
+      {
+        let object = exception.try_cast::<v8::Object>().unwrap();
+        let stack = v8::String::new(tc_scope, "stack").unwrap();
+        if object.has_own_property(tc_scope, stack.into()) == Some(false) {
+          // An API failure is a newly raised native exception. Capture its
+          // actual native raise site once, after construction has returned.
+          // Explicit DOMException construction and existing authored stacks
+          // retain their original representation.
+          v8::Exception::capture_stack_trace(
+            tc_scope.get_current_context(),
+            object,
+          );
+        }
+      }
+      exception
+    }
     None => {
       // The JS error builder callback failed. This can happen when the
       // stack is exhausted (e.g. Maximum call stack size exceeded) and
@@ -2526,7 +2571,7 @@ pub fn throw_error_one_byte_info(
 }
 
 pub fn throw_error_js_error_class<'s, 'i>(
-  scope: &mut v8::PinCallbackScope<'s, 'i>,
+  scope: &mut v8::PinScope<'s, 'i>,
   err: &dyn JsErrorClass,
 ) {
   let exc = to_v8_error(scope, err);
@@ -2534,7 +2579,7 @@ pub fn throw_error_js_error_class<'s, 'i>(
 }
 
 pub fn throw_error_one_byte<'s, 'i>(
-  scope: &mut v8::PinCallbackScope<'s, 'i>,
+  scope: &mut v8::PinScope<'s, 'i>,
   message: &str,
 ) {
   let msg = deno_core::v8::String::new_from_one_byte(
@@ -2561,7 +2606,7 @@ pub fn throw_invalid_this_error_one_byte_info(
 }
 
 pub fn throw_invalid_this_error_one_byte<'s, 'i>(
-  scope: &mut v8::PinCallbackScope<'s, 'i>,
+  scope: &mut v8::PinScope<'s, 'i>,
   message: &str,
 ) {
   let msg = deno_core::v8::String::new_from_one_byte(
