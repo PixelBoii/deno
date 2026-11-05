@@ -58,6 +58,8 @@ const { EventTarget, Event, defineEventHandler, dispatch, setIsTrusted } = core.
 const { DOMException } = core.loadExtScript("ext:deno_web/01_dom_exception.js");
 
 const illegalConstructorKey = Symbol("illegalConstructorKey");
+const performanceBacking = value => core.hostInterfaceData(value, "Performance");
+const entryBacking = value => core.hostInterfaceData(value, "PerformanceEntry");
 let performanceEntries = [];
 let timeOrigin;
 let timeOriginOffset = 0;
@@ -137,7 +139,7 @@ function createPerformanceEntry(name, type, startTime, duration) {
 
 function updatePerformanceEntry(entry, duration) {
   webidl.assertBranded(entry, PerformanceEntryPrototype);
-  entry[_duration] = duration;
+  entryBacking(entry).duration = duration;
 }
 
 // A reused initial Window receives a new document navigation, while keeping
@@ -145,7 +147,7 @@ function updatePerformanceEntry(entry, duration) {
 function replacePerformanceEntry(previous, next) {
   webidl.assertBranded(previous, PerformanceEntryPrototype);
   webidl.assertBranded(next, PerformanceEntryPrototype);
-  if (previous[_entryType] !== next[_entryType]) {
+  if (entryBacking(previous).entryType !== entryBacking(next).entryType) {
     throw new TypeError("Replacement performance entry must have the same type");
   }
   const index = ArrayPrototypeIndexOf(performanceEntries, previous);
@@ -157,7 +159,7 @@ function recordPerformanceEntry(entry, notify = true) {
   webidl.assertBranded(entry, PerformanceEntryPrototype);
   // Observers still receive entries when the resource timeline buffer is full.
   if (notify) queuePerformanceEntry(entry);
-  if (entry.entryType === "resource") {
+  if (entryBacking(entry).entryType === "resource") {
     if (resourceTimingCount >= resourceTimingBufferSize || resourceTimingTaskQueued) {
       ArrayPrototypePush(resourceTimingSecondaryBuffer, entry);
       if (!resourceTimingTaskQueued) {
@@ -191,7 +193,7 @@ function drainResourceTimingBuffer() {
 }
 
 function sortedEntries(entries) {
-  return ArrayPrototypeSort(copyObserverEntries(entries), (a, b) => a.startTime - b.startTime);
+  return ArrayPrototypeSort(copyObserverEntries(entries), (a, b) => entryBacking(a).startTime - entryBacking(b).startTime);
 }
 
 webidl.converters["PerformanceMarkOptions"] = webidl
@@ -267,22 +269,22 @@ function findMostRecent(
 ) {
   for (let i = performanceEntries.length - 1; i >= 0; --i) {
     const entry = performanceEntries[i];
-    if (entry.name === name && entry.entryType === type) {
+    if (entryBacking(entry).name === name && entryBacking(entry).entryType === type) {
       return entry;
     }
   }
 }
 
-function convertMarkToTimestamp(mark) {
+function convertMarkToTimestamp(mark, state = undefined) {
   if (typeof mark === "string") {
-    const entry = findMostRecent(mark, "mark");
+    const entry = state ? state.findMark(mark) : findMostRecent(mark, "mark");
     if (!entry) {
       throw new DOMException(
         `Cannot find mark: "${mark}"`,
         "SyntaxError",
       );
     }
-    return entry.startTime;
+    return entryBacking(entry).startTime;
   }
   if (mark < 0) {
     throw new TypeError(`Mark cannot be negative: received ${mark}`);
@@ -297,39 +299,30 @@ function filterByNameType(
   return sortedEntries(ArrayPrototypeFilter(
     performanceEntries,
     (entry) =>
-      (name !== undefined ? entry.name === name : true) &&
-      (type !== undefined ? entry.entryType === type : true),
+      (name !== undefined ? entryBacking(entry).name === name : true) &&
+      (type !== undefined ? entryBacking(entry).entryType === type : true),
   ));
 }
 
-const _name = Symbol("[[name]]");
-const _entryType = Symbol("[[entryType]]");
-const _startTime = Symbol("[[startTime]]");
-const _duration = Symbol("[[duration]]");
 class PerformanceEntry {
-  [_name] = "";
-  [_entryType] = "";
-  [_startTime] = 0;
-  [_duration] = 0;
-
   get name() {
     webidl.assertBranded(this, PerformanceEntryPrototype);
-    return this[_name];
+    return entryBacking(this).name;
   }
 
   get entryType() {
     webidl.assertBranded(this, PerformanceEntryPrototype);
-    return this[_entryType];
+    return entryBacking(this).entryType;
   }
 
   get startTime() {
     webidl.assertBranded(this, PerformanceEntryPrototype);
-    return this[_startTime];
+    return entryBacking(this).startTime;
   }
 
   get duration() {
     webidl.assertBranded(this, PerformanceEntryPrototype);
-    return this[_duration];
+    return entryBacking(this).duration;
   }
 
   constructor(
@@ -342,21 +335,22 @@ class PerformanceEntry {
     if (key !== illegalConstructorKey) {
       webidl.illegalConstructor();
     }
-    this[webidl.brand] = webidl.brand;
+    core.markHostInterface(this, "PerformanceEntry");
+    core.markUnserializableHostObject(this);
 
-    this[_name] = name;
-    this[_entryType] = entryType;
-    this[_startTime] = startTime;
-    this[_duration] = duration;
+    entryBacking(this).name = name;
+    entryBacking(this).entryType = entryType;
+    entryBacking(this).startTime = startTime;
+    entryBacking(this).duration = duration;
   }
 
   toJSON() {
     webidl.assertBranded(this, PerformanceEntryPrototype);
     return {
-      name: this[_name],
-      entryType: this[_entryType],
-      startTime: this[_startTime],
-      duration: this[_duration],
+      name: entryBacking(this).name,
+      entryType: entryBacking(this).entryType,
+      startTime: entryBacking(this).startTime,
+      duration: entryBacking(this).duration,
     };
   }
 
@@ -381,14 +375,13 @@ class PerformanceEntry {
 }
 webidl.configureInterface(PerformanceEntry);
 const PerformanceEntryPrototype = PerformanceEntry.prototype;
+webidl.registerInterfaceBrand(PerformanceEntryPrototype, value => core.hasHostInterface(value, "PerformanceEntry"));
 
-const _detail = Symbol("[[detail]]");
 class PerformanceMark extends PerformanceEntry {
-  [_detail] = null;
 
   get detail() {
     webidl.assertBranded(this, PerformanceMarkPrototype);
-    return this[_detail];
+    return entryBacking(this).detail;
   }
 
   get entryType() {
@@ -414,23 +407,23 @@ class PerformanceMark extends PerformanceEntry {
     const { detail = null, startTime = now() } = options;
 
     super(name, "mark", startTime, 0, illegalConstructorKey);
-    this[webidl.brand] = webidl.brand;
+    core.markHostInterface(this, "PerformanceMark");
     if (startTime < 0) {
       throw new TypeError(
         `Cannot construct PerformanceMark: startTime cannot be negative, received ${startTime}`,
       );
     }
-    this[_detail] = getStructuredClone()(detail);
+    entryBacking(this).detail = getStructuredClone()(detail);
   }
 
   toJSON() {
     webidl.assertBranded(this, PerformanceMarkPrototype);
     return {
-      name: this.name,
-      entryType: this.entryType,
-      startTime: this.startTime,
-      duration: this.duration,
-      detail: this.detail,
+      name: entryBacking(this).name,
+      entryType: entryBacking(this).entryType,
+      startTime: entryBacking(this).startTime,
+      duration: entryBacking(this).duration,
+      detail: entryBacking(this).detail,
     };
   }
 
@@ -453,12 +446,12 @@ class PerformanceMark extends PerformanceEntry {
 }
 webidl.configureInterface(PerformanceMark);
 const PerformanceMarkPrototype = PerformanceMark.prototype;
+webidl.registerInterfaceBrand(PerformanceMarkPrototype, value => core.hasHostInterface(value, "PerformanceMark"));
 class PerformanceMeasure extends PerformanceEntry {
-  [_detail] = null;
 
   get detail() {
     webidl.assertBranded(this, PerformanceMeasurePrototype);
-    return this[_detail];
+    return entryBacking(this).detail;
   }
 
   get entryType() {
@@ -478,18 +471,18 @@ class PerformanceMeasure extends PerformanceEntry {
     }
 
     super(name, "measure", startTime, duration, key);
-    this[webidl.brand] = webidl.brand;
-    this[_detail] = getStructuredClone()(detail);
+    core.markHostInterface(this, "PerformanceMeasure");
+    entryBacking(this).detail = getStructuredClone()(detail);
   }
 
   toJSON() {
     webidl.assertBranded(this, PerformanceMeasurePrototype);
     return {
-      name: this.name,
-      entryType: this.entryType,
-      startTime: this.startTime,
-      duration: this.duration,
-      detail: this.detail,
+      name: entryBacking(this).name,
+      entryType: entryBacking(this).entryType,
+      startTime: entryBacking(this).startTime,
+      duration: entryBacking(this).duration,
+      detail: entryBacking(this).detail,
     };
   }
 
@@ -515,6 +508,7 @@ class PerformanceMeasure extends PerformanceEntry {
 }
 webidl.configureInterface(PerformanceMeasure);
 const PerformanceMeasurePrototype = PerformanceMeasure.prototype;
+webidl.registerInterfaceBrand(PerformanceMeasurePrototype, value => core.hasHostInterface(value, "PerformanceMeasure"));
 
 // Opaque host state is shared across same-isolate realms. Backend operations
 // retain their creating timeline, even when a foreign prototype method is used.
@@ -560,7 +554,7 @@ function queuePerformanceEntry(entry) {
   for (let i = 0; i < performanceObservers.length; i++) {
     const observer = performanceObservers[i];
     const state = observerData(observer);
-    if (ArrayPrototypeIncludes(state.entryTypes, entry.entryType)) {
+    if (ArrayPrototypeIncludes(state.entryTypes, entryBacking(entry).entryType)) {
       ArrayPrototypePush(state.buffer, entry);
       scheduleObserverCallback(observer);
     }
@@ -588,7 +582,7 @@ function observerEntriesByName(entries, name, type, count) {
   const result = [];
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
-    if (entry.name === name && (type === undefined || entry.entryType === type)) {
+    if (entryBacking(entry).name === name && (type === undefined || entryBacking(entry).entryType === type)) {
       ArrayPrototypePush(result, entry);
     }
   }
@@ -662,7 +656,7 @@ function observePerformance(observer, options) {
     let appended = false;
     for (let i = 0; i < performanceEntries.length; i++) {
       const entry = performanceEntries[i];
-      if (entry.entryType === type) {
+      if (entryBacking(entry).entryType === type) {
         ArrayPrototypePush(state.buffer, entry);
         appended = true;
       }
@@ -742,12 +736,37 @@ class Performance extends EventTarget {
     }
 
     super();
-    this[webidl.brand] = webidl.brand;
+    core.markHostInterface(this, "Performance");
+    core.markUnserializableHostObject(this);
+    const state = performanceBacking(this);
+    state.timeOrigin = () => timeOrigin;
+    state.now = now;
+    state.entries = filterByNameType;
+    state.findMark = name => findMostRecent(name, "mark");
+    state.clear = (type, name) => {
+      performanceEntries = ArrayPrototypeFilter(performanceEntries, entry =>
+        entryBacking(entry).entryType !== type ||
+        (name !== undefined && entryBacking(entry).name !== name));
+      if (type === "resource") resourceTimingCount = 0;
+    };
+    state.setBufferSize = size => { resourceTimingBufferSize = size; };
+    state.mark = (name, options) => {
+      const entry = new PerformanceMark(name, options);
+      ArrayPrototypePush(performanceEntries, entry);
+      queuePerformanceEntry(entry);
+      return entry;
+    };
+    state.measure = (name, start, duration, detail) => {
+      const entry = new PerformanceMeasure(name, start, duration, detail, illegalConstructorKey);
+      ArrayPrototypePush(performanceEntries, entry);
+      queuePerformanceEntry(entry);
+      return entry;
+    };
   }
 
   get timeOrigin() {
     webidl.assertBranded(this, PerformancePrototype);
-    return timeOrigin;
+    return performanceBacking(this).timeOrigin();
   }
 
   clearMarks(markName = undefined) {
@@ -758,17 +777,8 @@ class Performance extends EventTarget {
         "Failed to execute 'clearMarks' on 'Performance'",
         "Argument 1",
       );
-
-      performanceEntries = ArrayPrototypeFilter(
-        performanceEntries,
-        (entry) => !(entry.name === markName && entry.entryType === "mark"),
-      );
-    } else {
-      performanceEntries = ArrayPrototypeFilter(
-        performanceEntries,
-        (entry) => entry.entryType !== "mark",
-      );
     }
+    performanceBacking(this).clear("mark", markName);
   }
 
   clearMeasures(measureName = undefined) {
@@ -779,27 +789,13 @@ class Performance extends EventTarget {
         "Failed to execute 'clearMeasures' on 'Performance'",
         "Argument 1",
       );
-
-      performanceEntries = ArrayPrototypeFilter(
-        performanceEntries,
-        (entry) =>
-          !(entry.name === measureName && entry.entryType === "measure"),
-      );
-    } else {
-      performanceEntries = ArrayPrototypeFilter(
-        performanceEntries,
-        (entry) => entry.entryType !== "measure",
-      );
     }
+    performanceBacking(this).clear("measure", measureName);
   }
 
   clearResourceTimings() {
     webidl.assertBranded(this, PerformancePrototype);
-    performanceEntries = ArrayPrototypeFilter(
-      performanceEntries,
-      (entry) => entry.entryType !== "resource",
-    );
-    resourceTimingCount = 0;
+    performanceBacking(this).clear("resource");
   }
 
   setResourceTimingBufferSize(maxSize) {
@@ -809,14 +805,15 @@ class Performance extends EventTarget {
       1,
       "Failed to execute 'setResourceTimingBufferSize' on 'Performance'",
     );
-    resourceTimingBufferSize = webidl.converters["unsigned long"](
+    const size = webidl.converters["unsigned long"](
       maxSize, "Failed to execute 'setResourceTimingBufferSize' on 'Performance'", "Argument 1",
     );
+    performanceBacking(this).setBufferSize(size);
   }
 
   getEntries() {
     webidl.assertBranded(this, PerformancePrototype);
-    return filterByNameType();
+    return performanceBacking(this).entries();
   }
 
   getEntriesByName(
@@ -833,7 +830,7 @@ class Performance extends EventTarget {
       type = webidl.converters.DOMString(type, prefix, "Argument 2");
     }
 
-    return filterByNameType(name, type);
+    return performanceBacking(this).entries(name, type);
   }
 
   getEntriesByType(type) {
@@ -843,7 +840,7 @@ class Performance extends EventTarget {
 
     type = webidl.converters.DOMString(type, prefix, "Argument 1");
 
-    return filterByNameType(undefined, type);
+    return performanceBacking(this).entries(undefined, type);
   }
 
   mark(
@@ -862,13 +859,15 @@ class Performance extends EventTarget {
       "Argument 2",
     );
 
-    // 3.1.1.1 If the global object is a Window object and markName uses the
-    // same name as a read only attribute in the PerformanceTiming interface,
-    // throw a SyntaxError. - not implemented
-    const entry = new PerformanceMark(markName, markOptions);
-    ArrayPrototypePush(performanceEntries, entry);
-    queuePerformanceEntry(entry);
-    return entry;
+    if (markOptions.startTime !== undefined && markOptions.startTime < 0) {
+      throw new TypeError(`${prefix}: '${markName}' cannot have a negative start time.`);
+    }
+    // Serialize in the operation realm, then let the genuine receiver's factory
+    // create its entry and detail objects in that receiver's realm.
+    if (this !== performance && markOptions.detail !== undefined) {
+      markOptions.detail = getStructuredClone()(markOptions.detail);
+    }
+    return performanceBacking(this).mark(markName, markOptions);
   }
 
   measure(
@@ -914,67 +913,60 @@ class Performance extends EventTarget {
         );
       }
     }
+    const state = performanceBacking(this);
     let endTime;
     if (endMark) {
-      endTime = convertMarkToTimestamp(endMark);
+      endTime = convertMarkToTimestamp(endMark, state);
     } else if (
       typeof startOrMeasureOptions === "object" &&
       ReflectHas(startOrMeasureOptions, "end")
     ) {
-      endTime = convertMarkToTimestamp(startOrMeasureOptions.end);
+      endTime = convertMarkToTimestamp(startOrMeasureOptions.end, state);
     } else if (
       typeof startOrMeasureOptions === "object" &&
       ReflectHas(startOrMeasureOptions, "start") &&
       ReflectHas(startOrMeasureOptions, "duration")
     ) {
-      const start = convertMarkToTimestamp(startOrMeasureOptions.start);
-      const duration = convertMarkToTimestamp(startOrMeasureOptions.duration);
+      const start = convertMarkToTimestamp(startOrMeasureOptions.start, state);
+      const duration = convertMarkToTimestamp(startOrMeasureOptions.duration, state);
       endTime = start + duration;
     } else {
-      endTime = now();
+      endTime = state.now();
     }
     let startTime;
     if (
       typeof startOrMeasureOptions === "object" &&
       ReflectHas(startOrMeasureOptions, "start")
     ) {
-      startTime = convertMarkToTimestamp(startOrMeasureOptions.start);
+      startTime = convertMarkToTimestamp(startOrMeasureOptions.start, state);
     } else if (
       typeof startOrMeasureOptions === "object" &&
       ReflectHas(startOrMeasureOptions, "end") &&
       ReflectHas(startOrMeasureOptions, "duration")
     ) {
-      const end = convertMarkToTimestamp(startOrMeasureOptions.end);
-      const duration = convertMarkToTimestamp(startOrMeasureOptions.duration);
+      const end = convertMarkToTimestamp(startOrMeasureOptions.end, state);
+      const duration = convertMarkToTimestamp(startOrMeasureOptions.duration, state);
       startTime = end - duration;
     } else if (typeof startOrMeasureOptions === "string") {
-      startTime = convertMarkToTimestamp(startOrMeasureOptions);
+      startTime = convertMarkToTimestamp(startOrMeasureOptions, state);
     } else {
       startTime = 0;
     }
-    const entry = new PerformanceMeasure(
-      measureName,
-      startTime,
-      endTime - startTime,
-      typeof startOrMeasureOptions === "object"
-        ? startOrMeasureOptions.detail ?? null
-        : null,
-      illegalConstructorKey,
-    );
-    ArrayPrototypePush(performanceEntries, entry);
-    queuePerformanceEntry(entry);
-    return entry;
+    const detail = typeof startOrMeasureOptions === "object"
+      ? startOrMeasureOptions.detail ?? null : null;
+    return state.measure(measureName, startTime, endTime - startTime,
+      this === performance ? detail : getStructuredClone()(detail));
   }
 
   now() {
     webidl.assertBranded(this, PerformancePrototype);
-    return now();
+    return performanceBacking(this).now();
   }
 
   toJSON() {
     webidl.assertBranded(this, PerformancePrototype);
     return {
-      timeOrigin: this.timeOrigin,
+      timeOrigin: performanceBacking(this).timeOrigin(),
     };
   }
 
@@ -991,6 +983,7 @@ class Performance extends EventTarget {
 }
 webidl.configureInterface(Performance);
 const PerformancePrototype = Performance.prototype;
+webidl.registerInterfaceBrand(PerformancePrototype, value => core.hasHostInterface(value, "Performance"));
 defineEventHandler(PerformancePrototype, "resourcetimingbufferfull");
 
 webidl.converters["Performance"] = webidl.createInterfaceConverter(
