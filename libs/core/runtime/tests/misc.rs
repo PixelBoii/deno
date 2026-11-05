@@ -163,6 +163,13 @@ fn test_host_function_api() {
     try {new labelledAbstract();throw new Error('abstract constructor accepted');}
     catch(error) {check(error.message==="Failed to construct 'AbstractInterface': Illegal constructor", 'constructor error retains interface context');}
     check(dispatches===2,'labelled illegal constructor never enters dispatcher');
+    const pendingFailure = create(function backendDispatch(receiver, args, target, failure) {
+      return failure;
+    }, 'networkOperation', 0, false, undefined, false, undefined, undefined, undefined, false, 'Network failed');
+    function initiatingCall() { return pendingFailure(); }
+    const preparedFailure = initiatingCall();
+    check(preparedFailure instanceof TypeError && preparedFailure.message==='Network failed', 'native prepared error');
+    check(preparedFailure.stack.includes('initiatingCall') && !preparedFailure.stack.includes('backendDispatch'), 'error retains native initiating call');
     const real = {value:45};
     const before = Reflect.ownKeys(real);
     Deno.core.markHostInterface(real, 'TestInterface');

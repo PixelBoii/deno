@@ -295,10 +295,17 @@ fn host_function_callback(
   let values: Vec<_> = (0..args.length()).map(|i| args.get(i)).collect();
   let values = v8::Array::new_with_elements(scope, &values);
   let receiver = v8::undefined(scope).into();
+  let mut dispatch_args = vec![args.this().into(), values.into(), args.new_target()];
+  if let Ok(message) = data.get_index(scope, 9).unwrap().try_cast::<v8::String>() {
+    // Some asynchronous APIs retain a failure at their original native entry
+    // so later rejection reports the initiating call. Construct it once here,
+    // before dispatch, and pass the actual object to the backend unchanged.
+    dispatch_args.push(v8::Exception::type_error(scope, message));
+  }
   if let Some(result) = callback.call(
     scope,
     receiver,
-    &[args.this().into(), values.into(), args.new_target()],
+    &dispatch_args,
   ) {
     rv.set(result);
   }
@@ -368,6 +375,7 @@ pub fn op_create_host_function<'s>(
   first_argument_check: Option<v8::Local<'s, v8::Function>>,
   #[string] first_argument_interface: Option<String>,
   illegal_constructor: bool,
+  #[string] entry_error_message: Option<String>,
 ) -> Result<v8::Local<'s, v8::Function>, JsErrorBox> {
   // Binding JS callback data during snapshot generation is not supported.
   // Reject it explicitly instead of passing this graph to V8's serializer.
@@ -389,7 +397,10 @@ pub fn op_create_host_function<'s>(
   let interface = v8::String::new(scope, first_argument_interface.as_deref().unwrap_or("Object")).unwrap();
   let illegal_constructor = v8::Boolean::new(scope, illegal_constructor);
   let overload = v8::Boolean::new(scope, required_arguments.first_argument_overload);
-  let data = v8::Array::new_with_elements(scope, &[callback.into(), checker, promise.into(), count.into(), prefix.into(), argument_checker, interface.into(), illegal_constructor.into(), overload.into()]);
+  let entry_error_message = entry_error_message
+    .map(|message| v8::String::new(scope, &message).unwrap().into())
+    .unwrap_or_else(|| v8::undefined(scope).into());
+  let data = v8::Array::new_with_elements(scope, &[callback.into(), checker, promise.into(), count.into(), prefix.into(), argument_checker, interface.into(), illegal_constructor.into(), overload.into(), entry_error_message]);
   let function = v8::Function::builder(host_function_callback)
     .data(data.into())
     .length(length)
