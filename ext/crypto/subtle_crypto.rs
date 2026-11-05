@@ -95,6 +95,17 @@ impl SubtleCrypto {
     Err(SharedError::IllegalConstructor)
   }
 
+  #[fast]
+  #[rename("isInstance")]
+  #[static_method]
+  fn is_instance(
+    scope: &mut v8::PinScope,
+    value: v8::Local<v8::Value>,
+  ) -> bool {
+    deno_core::cppgc::try_unwrap_cppgc_object::<SubtleCrypto>(scope, value)
+      .is_some()
+  }
+
   /// Mint the singleton `SubtleCrypto` instance reachable as
   /// `globalThis.crypto.subtle`. Stays as a static method on the class
   /// (not a top-level op) so it travels with the cppgc class definition.

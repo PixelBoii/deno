@@ -33,9 +33,11 @@ const {
   isWeakMap,
   isWeakSet,
 } = core.loadExtScript("ext:deno_node/internal/util/types.ts");
-const { kKeyObject } = core.loadExtScript(
-  "ext:deno_node/internal/crypto/constants.ts",
-);
+let cryptoKeyMaterial;
+function keyMaterial(key) {
+  cryptoKeyMaterial ??= core.loadExtScript("ext:deno_crypto/00_crypto.js").cryptoKeyExportNodeKeyMaterial;
+  return cryptoKeyMaterial(key);
+}
 const { isError } = core.loadExtScript("ext:deno_node/internal/util.mjs");
 const lazyUrl = () => core.loadExtScript("ext:deno_node/internal/url.ts");
 
@@ -473,7 +475,7 @@ function objectComparisonStart(
       val1.extractable !== val2.extractable ||
       !innerDeepEqual(val1.algorithm, val2.algorithm, mode, memos) ||
       !innerDeepEqual(val1.usages, val2.usages, mode, memos) ||
-      !innerDeepEqual(val1[kKeyObject], val2[kKeyObject], mode, memos)
+      !innerDeepEqual(keyMaterial(val1), keyMaterial(val2), mode, memos)
     ) {
       return false;
     }

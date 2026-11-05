@@ -4,13 +4,10 @@
 //!
 //! Builds a `CryptoKey` cppgc instance plus the `{ cppgc: CryptoKeyHandle }`
 //! handle wrapper object, the algorithm dictionary object, and the frozen
-//! `usages` array, and stamps the `webidl.brand` / `kKeyObject` /
-//! private serialization registration used by the JS `constructKey()`
-//! helper did. Used by every `SubtleCrypto` method (import/generate/derive
+//! `usages` array, and privately registers the real structured-clone codec.
+//! Interface and Node compatibility checks use the actual cppgc key. Used by every `SubtleCrypto` method (import/generate/derive
 //! /wrap/unwrap/encapsulate/decapsulate/getPublicKey) now that those bodies
 //! live in Rust.
-
-use std::cell::RefCell;
 
 use deno_core::cppgc::make_cppgc_object;
 use deno_core::v8;
@@ -19,46 +16,6 @@ use crate::crypto_key::CryptoKey;
 use crate::crypto_key::CryptoKeyType;
 use crate::key_store::CryptoKeyHandle;
 use crate::shared::RawKeyData;
-
-/// Per-isolate cache of the key's compatibility brands and its private
-/// structured serialization key. Initialized with the crypto module and reused
-/// by genuine key construction within that isolate.
-pub struct CryptoSymbols {
-  pub webidl_brand: v8::Global<v8::Symbol>,
-  pub k_key_object: v8::Global<v8::Symbol>,
-  pub host_object_tag: v8::Global<v8::Private>,
-}
-
-thread_local! {
-  // Owned (not `Box::leak`ed) so the brand and private-key handles get
-  // dropped when the thread exits, releasing the V8 globals before isolate
-  // teardown.  Each worker (= each isolate = each thread) has its own
-  // instance.
-  static SYMBOLS: RefCell<Option<CryptoSymbols>> = const { RefCell::new(None) };
-}
-
-/// Register the three brand symbols that the JS `constructKey()` used to
-/// stamp onto every `CryptoKey`. Called once per isolate from JS at module
-/// init time (`op_crypto_install_symbols`). The symbols are stored in a
-/// thread-local because they are isolate-specific but a `OpState` borrow is
-/// not always reachable from inside the cppgc methods that need them (the
-/// async dispatcher already holds it mutable).
-pub fn set_symbols(symbols: CryptoSymbols) {
-  SYMBOLS.with(|cell| {
-    *cell.borrow_mut() = Some(symbols);
-  });
-}
-
-/// Lend the registered symbols to `f`. Returns `None` if [`set_symbols`]
-/// has not been called on this thread. The borrow scope is short — the
-/// callback only needs scope-local `v8::Local`s built from the cached
-/// `v8::Global<v8::Symbol>`s — so re-entrancy is not a concern.
-pub fn with_symbols<F, R>(_scope: &mut v8::PinScope<'_, '_>, f: F) -> Option<R>
-where
-  F: FnOnce(&CryptoSymbols) -> R,
-{
-  SYMBOLS.with(|cell| cell.borrow().as_ref().map(f))
-}
 
 /// Per-algorithm dictionary slots that get baked into the `CryptoKey`'s
 /// `algorithm` v8 object. The set of slots is intentionally minimal: the
@@ -195,7 +152,6 @@ pub fn make_crypto_key<'s>(
   alg: AlgorithmDict,
   data: RawKeyData,
 ) -> v8::Local<'s, v8::Object> {
-  let key_data_jsval = key_data_to_jsval(scope, &data);
   let host_object_snapshot = build_host_object_snapshot(
     scope,
     key_type,
@@ -217,55 +173,17 @@ pub fn make_crypto_key<'s>(
     handle.into(),
   );
   let obj = make_cppgc_object(scope, crypto_key);
-  stamp_symbols(scope, obj, key_data_jsval, host_object_snapshot);
+  register_key_clone(scope, obj, host_object_snapshot);
   obj
 }
 
-fn stamp_symbols<'s>(
+fn register_key_clone<'s>(
   scope: &mut v8::PinScope<'s, '_>,
   key: v8::Local<'s, v8::Object>,
-  k_key_object_val: v8::Local<'s, v8::Value>,
   host_object_snapshot: v8::Local<'s, v8::Value>,
 ) {
-  // Clone the three cached `v8::Global<v8::Symbol>`s out while we hold the
-  // thread-local borrow, then materialize them as `v8::Local`s once the
-  // borrow has been released (`v8::Local::new` needs `scope`, which we
-  // can't lend through the closure because the closure can't capture
-  // `scope` while the with-borrow is active).
-  let Some((brand_g, k_key_object_g, host_brand_g)) =
-    with_symbols(scope, |syms| {
-      (
-        syms.webidl_brand.clone(),
-        syms.k_key_object.clone(),
-        syms.host_object_tag.clone(),
-      )
-    })
-  else {
-    return;
-  };
-  let brand = v8::Local::new(scope, &brand_g);
-  let k_key_object = v8::Local::new(scope, &k_key_object_g);
-  let host_brand_sym = v8::Local::new(scope, &host_brand_g);
-  // The brand symbols must be non-enumerable to match the legacy JS
-  // `ObjectDefineProperty(key, sym, { value: ... })` shape. Without
-  // `DONT_ENUM` the cppgc instance exposes them as plain own properties,
-  // which breaks `assert.deepStrictEqual` of two distinct keys with the
-  // same material (test/parallel/test-assert-deep.js Crypto subtest) and
-  // shows up as `[Symbol(...)]` slots in `Deno.inspect()` output.
-  let _ = key.define_own_property(
-    scope,
-    brand.into(),
-    brand.into(),
-    v8::PropertyAttribute::DONT_ENUM,
-  );
-
-  let _ = key.define_own_property(
-    scope,
-    k_key_object.into(),
-    k_key_object_val,
-    v8::PropertyAttribute::DONT_ENUM,
-  );
-
+  let name = v8::String::new(scope, "Deno.core.hostObject").unwrap();
+  let host_brand_sym = v8::Private::for_api(scope, Some(name));
   // Register the real key's clone snapshot callback privately. Script symbols
   // cannot replace the codec or expose its internal key metadata.
   let ft = v8::FunctionTemplate::builder(host_object_thunk)
@@ -424,34 +342,4 @@ fn one_byte_internalized<'s>(
 ) -> v8::Local<'s, v8::String> {
   v8::String::new_from_one_byte(scope, bytes, v8::NewStringType::Internalized)
     .unwrap()
-}
-
-/// Body of the `Crypto.registerSymbols(webidlBrand, kKeyObject)` static
-/// method. Called once during module load to hand the WebIDL brand symbol
-/// (private to the webidl ESM) and the node:crypto `kKeyObject` symbol
-/// (private to ext/node) over to the crypto cppgc methods, which need them
-/// to brand every freshly-constructed `CryptoKey`. Lives here as a Rust
-/// function so it can be reused from a `#[static_method]` on either
-/// `Crypto` or `SubtleCrypto` without introducing a new standalone op.
-pub fn register_symbols<'s>(
-  scope: &mut v8::PinScope<'s, '_>,
-  webidl_brand: v8::Local<'s, v8::Value>,
-  k_key_object: v8::Local<'s, v8::Value>,
-) -> bool {
-  let Ok(webidl_brand) = v8::Local::<v8::Symbol>::try_from(webidl_brand) else {
-    return false;
-  };
-  let Ok(k_key_object) = v8::Local::<v8::Symbol>::try_from(k_key_object) else {
-    return false;
-  };
-  let host_obj = {
-    let name = v8::String::new(scope, "Deno.core.hostObject").unwrap();
-    v8::Private::for_api(scope, Some(name))
-  };
-  set_symbols(CryptoSymbols {
-    webidl_brand: v8::Global::new(scope, webidl_brand),
-    k_key_object: v8::Global::new(scope, k_key_object),
-    host_object_tag: v8::Global::new(scope, host_obj),
-  });
-  true
 }

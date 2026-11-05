@@ -6,9 +6,6 @@
 (function () {
 const { core, primordials } = __bootstrap;
 const { Symbol } = primordials;
-const { kKeyObject } = core.loadExtScript(
-  "ext:deno_node/internal/crypto/constants.ts",
-);
 
 const kKeyType = Symbol("kKeyType");
 
@@ -18,10 +15,10 @@ function isKeyObject(obj) {
   );
 }
 
+let nativeCryptoKeyCheck;
 function isCryptoKey(obj) {
-  return (
-    obj != null && obj[kKeyObject] !== undefined
-  );
+  nativeCryptoKeyCheck ??= core.loadExtScript("ext:deno_crypto/00_crypto.js").isCryptoKey;
+  return nativeCryptoKeyCheck(obj);
 }
 
 return { kKeyType, isKeyObject, isCryptoKey };

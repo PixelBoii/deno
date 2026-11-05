@@ -15,7 +15,7 @@
 // forwarder that gives the spec-mandated `Function.length === 2`.
 
 (function () {
-const { core, primordials, internals } = __bootstrap;
+const { core, primordials } = __bootstrap;
 const {
   op_crypto_is_seeded,
   op_crypto_random_uuid_batch,
@@ -38,20 +38,20 @@ const webidl = core.loadExtScript("ext:deno_webidl/00_webidl.js");
 const { createFilteredInspectProxy } = core.loadExtScript(
   "ext:deno_web/01_console.js",
 );
-const { kKeyObject } = internals;
 
 // Keep the real native allocation, clone and Node interop operations in this
 // privileged module. Public WebCrypto constructors are not a factory bridge.
 const createCrypto = Crypto.create;
-const registerCryptoSymbols = Crypto.registerSymbols;
+const isCrypto = Crypto.isInstance;
 const createSubtleCrypto = SubtleCrypto.create;
+const isSubtleCrypto = SubtleCrypto.isInstance;
 const cloneCryptoKey = CryptoKey.fromCloneData;
 const exportCryptoKeyMaterial = CryptoKey.exportNodeMaterial;
 const importCryptoKey = CryptoKey.importSync;
 const isCryptoKey = CryptoKey.isInstance;
 for (const [owner, names] of [
-  [Crypto, ["create", "registerSymbols"]],
-  [SubtleCrypto, ["create"]],
+  [Crypto, ["create", "isInstance"]],
+  [SubtleCrypto, ["create", "isInstance"]],
   [CryptoKey, ["fromCloneData", "exportNodeMaterial", "importSync", "isInstance"]],
 ]) {
   for (const name of names) ReflectDeleteProperty(owner, name);
@@ -87,6 +87,7 @@ function applyWebIdlInterfaceShape(interface_) {
 // all live in Rust (`ext/crypto/crypto_key.rs`). The JS shim only attaches
 // the `Deno.privateCustomInspect` symbol to the prototype.
 const CryptoKeyPrototype = CryptoKey.prototype;
+webidl.registerInterfaceBrand(CryptoKeyPrototype, isCryptoKey);
 ObjectDefineProperty(
   CryptoKeyPrototype,
   SymbolFor("Deno.privateCustomInspect"),
@@ -139,6 +140,7 @@ core.registerCloneableResource(
 // give it `length === 2` (the `length` default doesn't count) and
 // explicitly pass all three args through.
 const SubtleCryptoPrototype = SubtleCrypto.prototype;
+webidl.registerInterfaceBrand(SubtleCryptoPrototype, isSubtleCrypto);
 const cppgcDeriveBits = SubtleCryptoPrototype.deriveBits;
 const deriveBitsForwarder = {
   async deriveBits(algorithm, baseKey, length = undefined) {
@@ -245,17 +247,12 @@ applyWebIdlInterfaceShape(SubtleCrypto);
 // minted lazily: `SubtleCrypto.create()` (a static method on the cppgc
 // class) allocates the cppgc-wrapped instance, because the cppgc heap
 // isn't attached to the V8 isolate at snapshot-build time. The first
-// runtime read of `crypto.subtle` calls `getSubtleSingleton`, which also
-// stamps the `webidl.brand` symbol onto the instance so the
-// `assertBranded` checks at the top of every method body pass. The same
-// call hands `webidl.brand` and `kKeyObject` to Rust so freshly-minted
-// `CryptoKey`s carry both brands.
+// runtime read of `crypto.subtle` calls `getSubtleSingleton`. Interface
+// validation uses the actual cppgc instance rather than script properties.
 let subtleSingleton;
 function getSubtleSingleton() {
   if (subtleSingleton === undefined) {
-    FunctionPrototypeCall(registerCryptoSymbols, Crypto, webidl.brand, kKeyObject);
     subtleSingleton = FunctionPrototypeCall(createSubtleCrypto, SubtleCrypto);
-    subtleSingleton[webidl.brand] = webidl.brand;
   }
   return subtleSingleton;
 }
@@ -265,6 +262,7 @@ function getSubtleSingleton() {
 // `randomUUID` path batches complete UUID strings so calls after a refill stay
 // in JS; seeded runtimes use the native method to preserve exact RNG call order.
 const CryptoPrototype = Crypto.prototype;
+webidl.registerInterfaceBrand(CryptoPrototype, isCrypto);
 const cppgcRandomUUID = CryptoPrototype.randomUUID;
 
 const UUID_STRING_BYTES = 36;
@@ -320,10 +318,6 @@ function getCryptoSingleton() {
   if (cryptoSingleton === undefined) {
     cryptoSingleton = FunctionPrototypeCall(createCrypto, Crypto, getSubtleSingleton());
     usesSeededRng = op_crypto_is_seeded();
-    // Stamp the WebIDL brand so `Reflect.getPrototypeOf(crypto)` and
-    // the IDL `Crypto interface: operation randomUUID()` invariants
-    // resolve through the same brand-check path as `SubtleCrypto`.
-    cryptoSingleton[webidl.brand] = webidl.brand;
   }
   return cryptoSingleton;
 }
