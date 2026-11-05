@@ -88,6 +88,7 @@ function setTimeOrigin(options = undefined) {
     sharedTimeOrigin = current - elapsed;
     coarseSharedTimeOrigin = coarsenTime(sharedTimeOrigin);
     timeOrigin = coarsenTime(sharedClock.unixOffset() + sharedTimeOrigin);
+    sharedClock.setOrigin?.(coarseSharedTimeOrigin, timePrecision);
     return;
   }
   op_time_origin(hrU8);
