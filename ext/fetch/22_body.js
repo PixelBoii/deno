@@ -288,20 +288,21 @@ class InnerBody {
 
 /**
  * @param {any} prototype
- * @param {symbol} bodySymbol
- * @param {symbol} mimeTypeSymbol
+ * @param {(value: object) => InnerBody | null} getBody
+ * @param {(value: object) => MimeType | null} getMimeType
  * @returns {void}
  */
-function mixinBody(prototype, bodySymbol, mimeTypeSymbol) {
+function mixinBody(prototype, getBody, getMimeType) {
   async function consumeBody(object, type) {
     webidl.assertBranded(object, prototype);
 
-    const body = object[bodySymbol] !== null
-      ? await object[bodySymbol].consume()
+    const inner = getBody(object);
+    const body = inner !== null
+      ? await inner.consume()
       : new Uint8Array();
 
     const mimeType = type === "Blob" || type === "FormData"
-      ? object[mimeTypeSymbol]
+      ? getMimeType(object)
       : null;
     return packageData(body, type, mimeType);
   }
@@ -315,10 +316,11 @@ function mixinBody(prototype, bodySymbol, mimeTypeSymbol) {
        */
       get() {
         webidl.assertBranded(this, prototype);
-        if (this[bodySymbol] === null) {
+        const inner = getBody(this);
+        if (inner === null) {
           return null;
         } else {
-          return this[bodySymbol].stream;
+          return inner.stream;
         }
       },
       configurable: true,
@@ -332,8 +334,9 @@ function mixinBody(prototype, bodySymbol, mimeTypeSymbol) {
       get() {
         webidl.assertBranded(this, prototype);
         try {
-          if (this[bodySymbol] !== null) {
-            return this[bodySymbol].consumed();
+          const inner = getBody(this);
+          if (inner !== null) {
+            return inner.consumed();
           }
         } catch (_) {
           // Request is closed.
@@ -409,7 +412,7 @@ function mixinBody(prototype, bodySymbol, mimeTypeSymbol) {
       /** @returns {ReadableStream<string>} */
       value: function textStream() {
         webidl.assertBranded(this, prototype);
-        const inner = this[bodySymbol];
+        const inner = getBody(this);
         if (inner !== null && inner.unusable()) {
           throw new TypeError("Body already consumed.");
         }

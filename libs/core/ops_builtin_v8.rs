@@ -48,6 +48,14 @@ pub fn mark_as_unserializable_host_object(
   assert_eq!(object.set_private(scope, key, value.into()), Some(true));
 }
 
+#[op2(fast, reentrant)]
+pub fn op_mark_unserializable_host_object(
+  scope: &mut v8::PinScope,
+  object: v8::Local<v8::Object>,
+) {
+  mark_as_unserializable_host_object(scope, object);
+}
+
 fn host_interface_key<'s>(
   scope: &mut v8::PinScope<'s, '_>,
   name: &str,

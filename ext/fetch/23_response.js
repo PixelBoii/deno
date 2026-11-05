@@ -28,9 +28,6 @@ const {
   guardFromHeaders,
   headersFromHeaderList,
 } = core.loadExtScript("ext:deno_fetch/20_headers.js");
-const { markNotSerializable } = core.loadExtScript(
-  "ext:deno_web/13_message_port.js",
-);
 const {
   ArrayPrototypeFilter,
   ArrayPrototypeMap,
@@ -43,7 +40,6 @@ const {
   SafeArrayIterator,
   SafeFinalizationRegistry,
   SafeRegExp,
-  Symbol,
   SymbolFor,
   SymbolIterator,
   TypeError,
@@ -61,19 +57,6 @@ const REASON_PHRASE = [
 const REASON_PHRASE_MATCHER = regexMatcher(REASON_PHRASE);
 const REASON_PHRASE_RE = new SafeRegExp(`^[${REASON_PHRASE_MATCHER}]*$`);
 
-const _response = Symbol("response");
-const _headers = Symbol("headers");
-const _headersGuard = Symbol("headers guard");
-const _mimeType = Symbol("mime type");
-const _body = Symbol("body");
-const _serveFastStatus = Symbol("serve fast status");
-const _serveFastBody = Symbol("serve fast body");
-const _serveFastHeaderKind = Symbol("serve fast header kind");
-const _serveFastContentType = Symbol("serve fast content type");
-const _serveFastConsumed = Symbol("serve fast consumed");
-const _serveNativeResponse = Symbol("serve native response");
-const _lazyStaticBody = Symbol("lazy static body");
-const _lazyStaticContentType = Symbol("lazy static content type");
 
 const SERVE_FAST_HEADER_NONE = 0;
 const SERVE_FAST_HEADER_DEFAULT_TEXT = 1;
@@ -184,15 +167,15 @@ function newInnerResponse(status = 200, statusMessage = "") {
  */
 function responseHeaderList(response) {
   materializeLazyStaticBody(response);
-  const lazyStaticContentType = response[_lazyStaticContentType];
+  const lazyStaticContentType = responseData(response).lazyStaticContentType;
   if (lazyStaticContentType !== null) {
-    ArrayPrototypePush(response[_response].headerList, [
+    ArrayPrototypePush(responseData(response).response.headerList, [
       "content-type",
       lazyStaticContentType,
     ]);
-    response[_lazyStaticContentType] = null;
+    responseData(response).lazyStaticContentType = null;
   }
-  return response[_response].headerList;
+  return responseData(response).response.headerList;
 }
 
 /**
@@ -222,8 +205,8 @@ function wireHeaderList(inner) {
  * @returns {"immutable" | "request" | "request-no-cors" | "response" | "none"}
  */
 function responseHeaderGuard(response) {
-  const headers = response[_headers];
-  return headers === null ? response[_headersGuard] : guardFromHeaders(headers);
+  const headers = responseData(response).headers;
+  return headers === null ? responseData(response).headersGuard : guardFromHeaders(headers);
 }
 
 /**
@@ -233,49 +216,50 @@ function responseHeaderGuard(response) {
 function responseHeaders(response) {
   dropServeNativeResponse(response);
   dropServeFastStatic(response);
-  let headers = response[_headers];
+  let headers = responseData(response).headers;
   if (headers === null) {
     headers = headersFromHeaderList(
       responseHeaderList(response),
-      response[_headersGuard],
+      responseData(response).headersGuard,
     );
-    response[_headers] = headers;
+    responseData(response).headers = headers;
   }
   return headers;
 }
 
 function initializeResponseBase(response, inner, guard) {
-  response[_response] = inner;
-  response[_headers] = null;
-  response[_headersGuard] = guard;
-  response[_serveFastStatus] = 0;
-  response[_serveFastBody] = null;
-  response[_serveFastHeaderKind] = SERVE_FAST_HEADER_NONE;
-  response[_serveFastContentType] = null;
-  response[_serveFastConsumed] = false;
-  response[_serveNativeResponse] = null;
-  response[_lazyStaticBody] = null;
-  response[_lazyStaticContentType] = null;
+  initializeResponseIdentity(response);
+  responseData(response).response = inner;
+  responseData(response).headers = null;
+  responseData(response).headersGuard = guard;
+  responseData(response).serveFastStatus = 0;
+  responseData(response).serveFastBody = null;
+  responseData(response).serveFastHeaderKind = SERVE_FAST_HEADER_NONE;
+  responseData(response).serveFastContentType = null;
+  responseData(response).serveFastConsumed = false;
+  responseData(response).serveNativeResponse = null;
+  responseData(response).lazyStaticBody = null;
+  responseData(response).lazyStaticContentType = null;
 }
 
 function setServeFastStatic(response, status, body, headerKind, contentType) {
-  response[_serveFastStatus] = status;
-  response[_serveFastBody] = body;
-  response[_serveFastHeaderKind] = headerKind;
-  response[_serveFastContentType] = contentType;
+  responseData(response).serveFastStatus = status;
+  responseData(response).serveFastBody = body;
+  responseData(response).serveFastHeaderKind = headerKind;
+  responseData(response).serveFastContentType = contentType;
 }
 
 function dropServeFastStatic(response) {
-  response[_serveFastStatus] = 0;
-  response[_serveFastBody] = null;
-  response[_serveFastHeaderKind] = SERVE_FAST_HEADER_NONE;
-  response[_serveFastContentType] = null;
+  responseData(response).serveFastStatus = 0;
+  responseData(response).serveFastBody = null;
+  responseData(response).serveFastHeaderKind = SERVE_FAST_HEADER_NONE;
+  responseData(response).serveFastContentType = null;
 }
 
 function dropServeNativeResponse(response) {
-  const native = response[_serveNativeResponse];
+  const native = responseData(response).serveNativeResponse;
   if (native === null || native === undefined) return;
-  response[_serveNativeResponse] = null;
+  responseData(response).serveNativeResponse = null;
   nativeResponseRegistry?.unregister(response);
   opHttpDropResponseNative?.(native);
 }
@@ -283,7 +267,7 @@ function dropServeNativeResponse(response) {
 function setServeNativeResponse(response, native) {
   dropServeNativeResponse(response);
   if (native === null || native === undefined) return;
-  response[_serveNativeResponse] = native;
+  responseData(response).serveNativeResponse = native;
   nativeResponseRegistry?.register(response, native, response);
 }
 
@@ -294,7 +278,7 @@ function setServeNativeFromHeaders(response, status, body, headers) {
 }
 
 function maybeSetServeFastStaticFromInner(response, body) {
-  if (response[_response].status !== 200) return false;
+  if (responseData(response).response.status !== 200) return false;
 
   const headers = responseHeaderList(response);
   if (headers.length === 0) {
@@ -328,12 +312,12 @@ function maybeSetServeFastStaticFromInner(response, body) {
 }
 
 function maybeSetServeNativeFromInner(response) {
-  if (response[_response].status === 0) return;
-  if (response[_response].body === null) {
+  if (responseData(response).response.status === 0) return;
+  if (responseData(response).response.body === null) {
     return;
   }
 
-  const body = response[_response].body.streamOrStatic?.body;
+  const body = responseData(response).response.body.streamOrStatic?.body;
   if (
     typeof body !== "string" &&
     TypedArrayPrototypeGetSymbolToStringTag(body) !== "Uint8Array"
@@ -345,32 +329,32 @@ function maybeSetServeNativeFromInner(response) {
   }
   setServeNativeFromHeaders(
     response,
-    response[_response].status,
+    responseData(response).response.status,
     body,
     responseHeaderList(response),
   );
 }
 
 function materializeLazyStaticBody(response) {
-  const lazyStaticBody = response[_lazyStaticBody];
+  const lazyStaticBody = responseData(response).lazyStaticBody;
   if (lazyStaticBody === null || lazyStaticBody === undefined) return;
 
   dropServeNativeResponse(response);
   const { body, contentType } = extractBody(lazyStaticBody);
-  const lazyStaticContentType = response[_lazyStaticContentType];
-  response[_response].body = body;
+  const lazyStaticContentType = responseData(response).lazyStaticContentType;
+  responseData(response).response.body = body;
   if (lazyStaticContentType !== null || contentType !== null) {
-    ArrayPrototypePush(response[_response].headerList, [
+    ArrayPrototypePush(responseData(response).response.headerList, [
       "Content-Type",
       lazyStaticContentType ?? contentType,
     ]);
   }
-  response[_lazyStaticBody] = null;
-  response[_lazyStaticContentType] = null;
+  responseData(response).lazyStaticBody = null;
+  responseData(response).lazyStaticContentType = null;
 }
 
 function markMaterializedBodyConsumed(response) {
-  const body = response[_response].body;
+  const body = responseData(response).response.body;
   const streamOrStatic = body?.streamOrStatic;
   if (streamOrStatic?.consumed === false) {
     streamOrStatic.consumed = true;
@@ -452,12 +436,12 @@ function tryInitializeStaticResponseFast(response, init, bodyWithType) {
     if (serveContentType === null) {
       return false;
     }
-    response[_lazyStaticContentType] = serveContentType;
+    responseData(response).lazyStaticContentType = serveContentType;
   } else if (contentType !== null) {
-    response[_lazyStaticContentType] = contentType;
+    responseData(response).lazyStaticContentType = contentType;
   }
 
-  response[_response].body = body;
+  responseData(response).response.body = body;
   if (serveContentType === null) {
     setServeFastStatic(
       response,
@@ -531,10 +515,10 @@ function initializeAResponse(
   }
 
   // 3.
-  response[_response].status = init.status;
+  responseData(response).response.status = init.status;
 
   // 4.
-  response[_response].statusMessage = init.statusText;
+  responseData(response).response.statusMessage = init.statusText;
   // 5.
   if (init.headers !== undefined) {
     const list = responseHeaderList(response);
@@ -555,14 +539,14 @@ function initializeAResponse(
 
   // 6.
   if (bodyWithType !== null) {
-    if (nullBodyStatus(response[_response].status)) {
+    if (nullBodyStatus(responseData(response).response.status)) {
       throw new TypeError(
         "Response with null body status cannot have body",
       );
     }
 
     const { body, contentType } = bodyWithType;
-    response[_response].body = body;
+    responseData(response).response.body = body;
 
     if (contentType !== null) {
       const list = responseHeaderList(response);
@@ -592,10 +576,10 @@ function initializeAResponseDefault(response, bodyWithType) {
   }
 
   const { body, contentType } = bodyWithType;
-  response[_response].body = body;
+  responseData(response).response.body = body;
   const staticBody = body.streamOrStatic?.body;
   if (contentType !== null) {
-    ArrayPrototypePush(response[_response].headerList, [
+    ArrayPrototypePush(responseData(response).response.headerList, [
       "Content-Type",
       contentType,
     ]);
@@ -635,30 +619,32 @@ function initializeAResponseDefault(response, bodyWithType) {
   }
 }
 
-class Response {
-  get [_mimeType]() {
-    const values = getDecodeSplitHeader(
-      responseHeaderList(this),
-      "Content-Type",
-    );
-    return extractMimeType(values);
-  }
-  get [_body]() {
-    const serveFastConsumed = this[_serveFastConsumed];
-    materializeLazyStaticBody(this);
-    if (serveFastConsumed) {
-      markMaterializedBodyConsumed(this);
-    }
-    return this[_response].body;
-  }
+const responseData = value => core.hostInterfaceData(value, "Response");
 
+function initializeResponseIdentity(response) {
+  core.markHostInterface(response, "Response");
+  core.markUnserializableHostObject(response);
+}
+
+function responseMimeType(response) {
+  return extractMimeType(getDecodeSplitHeader(responseHeaderList(response), "Content-Type"));
+}
+
+function responseBody(response) {
+  const consumed = responseData(response).serveFastConsumed;
+  materializeLazyStaticBody(response);
+  if (consumed) markMaterializedBodyConsumed(response);
+  return responseData(response).response.body;
+}
+
+class Response {
   /**
    * @returns {Response}
    */
   static error() {
     const inner = newInnerResponse(0);
     inner.type = "error";
-    const response = webidl.createBranded(Response);
+    const response = new Response(_brand);
     initializeResponseBase(response, inner, "immutable");
     maybeSetServeNativeFromInner(response);
     return response;
@@ -682,7 +668,7 @@ class Response {
     const inner = newInnerResponse(status);
     inner.type = "default";
     ArrayPrototypePush(inner.headerList, ["Location", parsedURL.href]);
-    const response = webidl.createBranded(Response);
+    const response = new Response(_brand);
     initializeResponseBase(response, inner, "immutable");
     maybeSetServeNativeFromInner(response);
     return response;
@@ -699,10 +685,10 @@ class Response {
     const defaultInit = init === undefined || init === null;
     const str = serializeJSValueToJSONString(data);
     if (defaultInit) {
-      const response = webidl.createBranded(Response);
+      const response = new Response(_brand);
       initializeResponseBase(response, newInnerResponse(), "response");
-      response[_lazyStaticBody] = str;
-      response[_lazyStaticContentType] = "application/json";
+      responseData(response).lazyStaticBody = str;
+      responseData(response).lazyStaticContentType = "application/json";
       setServeFastStatic(
         response,
         200,
@@ -716,7 +702,7 @@ class Response {
 
     const res = extractBody(str);
     res.contentType = "application/json";
-    const response = webidl.createBranded(Response);
+    const response = new Response(_brand);
     initializeResponseBase(response, newInnerResponse(), "response");
     if (tryInitializeStaticResponseFast(response, init, res)) {
       return response;
@@ -731,7 +717,7 @@ class Response {
    */
   constructor(body = null, init = undefined) {
     if (body === _brand) {
-      this[_brand] = _brand;
+      initializeResponseIdentity(this);
       return;
     }
 
@@ -742,13 +728,13 @@ class Response {
       init = webidlConvertersResponseInitFast(init, prefix, "Argument 2");
     }
 
-    this[_brand] = _brand;
+    initializeResponseIdentity(this);
     initializeResponseBase(this, newInnerResponse(), "response");
 
     let bodyWithType = null;
     if (body !== null) {
       if (defaultInit && typeof body === "string") {
-        this[_lazyStaticBody] = body;
+        responseData(this).lazyStaticBody = body;
         setServeFastStatic(
           this,
           200,
@@ -775,7 +761,7 @@ class Response {
    */
   get type() {
     webidl.assertBranded(this, ResponsePrototype);
-    return this[_response].type;
+    return responseData(this).response.type;
   }
 
   /**
@@ -783,7 +769,7 @@ class Response {
    */
   get url() {
     webidl.assertBranded(this, ResponsePrototype);
-    const url = this[_response].url();
+    const url = responseData(this).response.url();
     if (url === null) return "";
     const newUrl = new URL(url);
     newUrl.hash = "";
@@ -795,7 +781,7 @@ class Response {
    */
   get redirected() {
     webidl.assertBranded(this, ResponsePrototype);
-    return this[_response].urlList.length > 1;
+    return responseData(this).response.urlList.length > 1;
   }
 
   /**
@@ -803,7 +789,7 @@ class Response {
    */
   get status() {
     webidl.assertBranded(this, ResponsePrototype);
-    return this[_response].status;
+    return responseData(this).response.status;
   }
 
   /**
@@ -811,7 +797,7 @@ class Response {
    */
   get ok() {
     webidl.assertBranded(this, ResponsePrototype);
-    const status = this[_response].status;
+    const status = responseData(this).response.status;
     return status >= 200 && status <= 299;
   }
 
@@ -820,7 +806,7 @@ class Response {
    */
   get statusText() {
     webidl.assertBranded(this, ResponsePrototype);
-    return this[_response].statusMessage;
+    return responseData(this).response.statusMessage;
   }
 
   /**
@@ -837,11 +823,11 @@ class Response {
   clone() {
     webidl.assertBranded(this, ResponsePrototype);
     materializeLazyStaticBody(this);
-    if (this[_body] && this[_body].unusable()) {
+    if (responseBody(this) && responseBody(this).unusable()) {
       throw new TypeError("Body is unusable");
     }
-    const second = webidl.createBranded(Response);
-    const newRes = cloneInnerResponse(this[_response]);
+    const second = new Response(_brand);
+    const newRes = cloneInnerResponse(responseData(this).response);
     initializeResponseBase(second, newRes, responseHeaderGuard(this));
     return second;
   }
@@ -874,8 +860,8 @@ ObjectDefineProperties(Response, {
   error: { __proto__: null, enumerable: true },
 });
 const ResponsePrototype = Response.prototype;
-markNotSerializable(ResponsePrototype);
-mixinBody(ResponsePrototype, _body, _mimeType);
+webidl.registerInterfaceBrand(ResponsePrototype, value => core.hasHostInterface(value, "Response"));
+mixinBody(ResponsePrototype, responseBody, responseMimeType);
 
 webidl.converters["Response"] = webidl.createInterfaceConverter(
   "Response",
@@ -927,7 +913,7 @@ const webidlConvertersResponseInitFast = webidl
  * @returns {InnerResponse | undefined}
  */
 function toInnerResponse(response) {
-  const inner = response[_response];
+  const inner = responseData(response)?.response;
   if (inner === undefined) {
     return undefined;
   }
@@ -940,7 +926,7 @@ function toInnerResponse(response) {
  * @returns {InnerResponse | undefined}
  */
 function getInnerResponse(response) {
-  return response[_response];
+  return responseData(response)?.response;
 }
 
 /**
@@ -950,7 +936,7 @@ function getInnerResponse(response) {
 function toInnerResponseForDenoServe(response) {
   webidl.assertBranded(response, ResponsePrototype);
   responseHeaderList(response);
-  return response[_response];
+  return responseData(response).response;
 }
 
 /**
@@ -959,7 +945,7 @@ function toInnerResponseForDenoServe(response) {
  */
 function responseIsError(response) {
   webidl.assertBranded(response, ResponsePrototype);
-  return response[_response].type === "error";
+  return responseData(response).response.type === "error";
 }
 
 /**
@@ -967,15 +953,15 @@ function responseIsError(response) {
  * @returns {boolean}
  */
 function responseBodyUsed(response) {
-  if (response[_serveFastConsumed]) return true;
+  if (responseData(response).serveFastConsumed) return true;
   if (
-    response[_lazyStaticBody] !== null &&
-    response[_lazyStaticBody] !== undefined
+    responseData(response).lazyStaticBody !== null &&
+    responseData(response).lazyStaticBody !== undefined
   ) {
     return false;
   }
   materializeLazyStaticBody(response);
-  const body = response[_response].body;
+  const body = responseData(response).response.body;
   if (body !== null) {
     try {
       return body.consumed();
@@ -1008,15 +994,17 @@ return {
   Response,
   responseBodyUsed,
   responseIsError,
+  responseData,
   ResponsePrototype,
   dropServeNativeResponse,
   getInnerResponse,
-  serveNativeResponseKey: _serveNativeResponse,
-  serveFastBodyKey: _serveFastBody,
-  serveFastConsumedKey: _serveFastConsumed,
-  serveFastContentTypeKey: _serveFastContentType,
-  serveFastHeaderKindKey: _serveFastHeaderKind,
-  serveFastStatusKey: _serveFastStatus,
+  // Deno.serve reads these fields on the native-private backing object.
+  serveNativeResponseKey: "serveNativeResponse",
+  serveFastBodyKey: "serveFastBody",
+  serveFastConsumedKey: "serveFastConsumed",
+  serveFastContentTypeKey: "serveFastContentType",
+  serveFastHeaderKindKey: "serveFastHeaderKind",
+  serveFastStatusKey: "serveFastStatus",
   SERVE_FAST_HEADER_CONTENT_TYPE,
   SERVE_FAST_HEADER_DEFAULT_TEXT,
   SERVE_FAST_HEADER_NONE,

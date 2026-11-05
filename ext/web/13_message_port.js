@@ -1054,7 +1054,7 @@ function markAsUncloneable(target) {
 // Returns true when `value` must raise a `DataCloneError` if it appears at the
 // top level of a `postMessage()` or `structuredClone()` call. This covers both
 // non-serializable Web API platform types (marked on their prototype via
-// `markNotSerializable`, e.g. URL / Headers / Request) and values flagged
+// `markNotSerializable`, e.g. URL) and values flagged
 // per-instance by `worker_threads.markAsUncloneable`. Both must be rejected
 // before V8's ValueSerializer runs, since it can't see these JS-only symbols
 // and would otherwise silently round-trip them as `{}`.
@@ -1095,8 +1095,8 @@ function isOwnPrototypeObject(value, sym) {
 }
 
 // Streams self-register their prototypes at the bottom of 06_streams.js.
-// Fetch types (Headers / Request / Response) call `markNotSerializable`
-// themselves at the bottom of their respective modules.
+// Fetch types register actual instances with the native private uncloneable
+// marker, which is also enforced for nested values by V8's serializer.
 
 function structuredClone(value, options) {
   // Fast path for primitives that StructuredSerialize returns by reference:

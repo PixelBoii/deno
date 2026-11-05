@@ -101,6 +101,11 @@ export namespace core {
    * inherit it. These primitives are only for trusted embedding initialization.
    */
   function markHostInterface(object: object, name: string): void;
+  /** Reject this actual instance during native structured serialization,
+   * including when nested. Its prototype and ordinary author properties remain
+   * untouched; copied or inherited properties do not carry the registration.
+   */
+  function markUnserializableHostObject(object: object): void;
   function hasHostInterface(value: unknown, name: string): boolean;
   function hostInterfaceData(value: unknown, name: string): Record<string, any> | null;
   function setHostObjectTag(object: object, tag: string | Function): void;

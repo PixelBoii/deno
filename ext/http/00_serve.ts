@@ -76,6 +76,7 @@ const {
 const { InnerBody } = core.loadExtScript("ext:deno_fetch/22_body.js");
 const {
   dropServeNativeResponse,
+  responseData,
   getInnerResponse,
   responseBodyUsed,
   ResponsePrototype,
@@ -516,19 +517,19 @@ function trySetServeFastStaticResponse(
   innerRequest,
   closeInnerRequest = closeInnerRequestImmediately,
 ) {
-  const status = response[serveFastStatusKey];
+  const status = responseData(response)[serveFastStatusKey];
   if (status === 0) {
     return false;
   }
 
-  const body = response[serveFastBodyKey];
+  const body = responseData(response)[serveFastBodyKey];
   if (body === null) {
     return false;
   }
 
   closeInnerRequest(innerRequest);
-  response[serveFastConsumedKey] = true;
-  switch (response[serveFastHeaderKindKey]) {
+  responseData(response)[serveFastConsumedKey] = true;
+  switch (responseData(response)[serveFastHeaderKindKey]) {
     case SERVE_FAST_HEADER_DEFAULT_TEXT:
       op_http_set_response_body_static_with_default_header(req, body, status);
       return true;
@@ -537,7 +538,7 @@ function trySetServeFastStaticResponse(
         req,
         body,
         status,
-        response[serveFastContentTypeKey],
+        responseData(response)[serveFastContentTypeKey],
       );
       return true;
     case SERVE_FAST_HEADER_NONE:
@@ -824,7 +825,7 @@ function mapToCallback(context, callback, onError) {
       return;
     }
 
-    const nativeResponse = response[serveNativeResponseKey];
+    const nativeResponse = responseData(response)[serveNativeResponseKey];
     if (trySetServeFastStaticResponse(req, response, innerRequest)) {
       return;
     }
@@ -833,7 +834,7 @@ function mapToCallback(context, callback, onError) {
       op_http_set_response_native(req, nativeResponse)
     ) {
       dropServeNativeResponse(response);
-      response[serveFastConsumedKey] = true;
+      responseData(response)[serveFastConsumedKey] = true;
       innerRequest?.close();
       return;
     }
@@ -993,13 +994,13 @@ function mapToNativeResponseCallback(context, callback, onError) {
       return undefined;
     }
 
-    const nativeResponse = response[serveNativeResponseKey];
+    const nativeResponse = responseData(response)[serveNativeResponseKey];
     if (
       nativeResponse !== null && nativeResponse !== undefined &&
       op_http_set_response_native(req, nativeResponse)
     ) {
       dropServeNativeResponse(response);
-      response[serveFastConsumedKey] = true;
+      responseData(response)[serveFastConsumedKey] = true;
       if (fromPromise) {
         closeInnerRequestImmediately(innerRequest);
       } else {

@@ -16,7 +16,6 @@ const {
   RegExpPrototypeExec,
   StringPrototypeStartsWith,
   StringPrototypeToUpperCase,
-  Symbol,
   SymbolFor,
   TypeError,
 } = primordials;
@@ -52,22 +51,8 @@ const {
   signalAbort,
 } = core.loadExtScript("ext:deno_web/03_abort_signal.js");
 const { DOMException } = core.loadExtScript("ext:deno_web/01_dom_exception.js");
-const { markNotSerializable } = core.loadExtScript(
-  "ext:deno_web/13_message_port.js",
-);
 const { internalRidSymbol } = core;
 
-const _request = Symbol("request");
-const _headers = Symbol("headers");
-const _getHeaders = Symbol("get headers");
-const _headersCache = Symbol("headers cache");
-const _headersGuard = Symbol("headers guard");
-const _signal = Symbol("signal");
-const _signalCache = Symbol("signalCache");
-const _mimeType = Symbol("mime type");
-const _body = Symbol("body");
-const _url = Symbol("url");
-const _method = Symbol("method");
 const _brand = webidl.brand;
 
 /**
@@ -289,79 +274,58 @@ function validateAndNormalizeMethod(m) {
   return m;
 }
 
-class Request {
-  /** @type {InnerRequest} */
-  [_request];
-  /** @type {Headers} */
-  [_headersCache];
-  [_getHeaders];
-  [_headersGuard];
-  [_signalCache];
-  [_url];
-  [_method];
+const requestData = value => core.hostInterfaceData(value, "Request");
 
-  /** @type {Headers} */
-  get [_headers]() {
-    if (this[_headersCache] === undefined) {
-      const getHeaders = this[_getHeaders];
-      if (getHeaders !== undefined && getHeaders !== null) {
-        this[_headersCache] = getHeaders();
-      } else {
-        const inner = this[_request];
-        const guard = this[_headersGuard];
-        if (typeof inner.header !== "function") {
-          this[_headersCache] = headersFromHeaderList(inner.headerList, guard);
-        } else {
-          this[_headersCache] = headersFromHeaderListLazyTarget(inner, guard);
-        }
-      }
+function initializeRequest(request) {
+  core.markHostInterface(request, "Request");
+  core.markUnserializableHostObject(request);
+}
+
+function requestHeaders(request) {
+  const data = requestData(request);
+  if (data.headersCache === undefined) {
+    const getHeaders = data.getHeaders;
+    if (getHeaders !== undefined && getHeaders !== null) {
+      data.headersCache = getHeaders();
+    } else {
+      const inner = data.request;
+      data.headersCache = typeof inner.header !== "function"
+        ? headersFromHeaderList(inner.headerList, data.headersGuard)
+        : headersFromHeaderListLazyTarget(inner, data.headersGuard);
     }
-    return this[_headersCache];
   }
+  return data.headersCache;
+}
 
-  set [_headers](value) {
-    this[_headersCache] = value;
-  }
-
-  /** @type {AbortSignal} */
-  get [_signal]() {
-    const signal = this[_signalCache];
-    // This signal has not been created yet, but the request has already completed
-    if (signal === false) {
-      const signal = newSignal();
-      this[_signalCache] = signal;
-      signal[signalAbort](
-        new DOMException(MESSAGE_REQUEST_CANCELLED, "AbortError"),
-      );
-      return signal;
-    }
-
-    // This signal not been created yet, and the request is still in progress
-    if (signal === undefined) {
-      const signal = newSignal();
-      this[_signalCache] = signal;
-      this[_request].onCancel?.(() => {
-        signal[signalAbort](
-          new DOMException(MESSAGE_REQUEST_CANCELLED, "AbortError"),
-        );
-      });
-
-      return signal;
-    }
-
+function requestSignal(request) {
+  const data = requestData(request);
+  const signal = data.signalCache;
+  if (signal === false) {
+    const signal = newSignal();
+    data.signalCache = signal;
+    signal[signalAbort](new DOMException(MESSAGE_REQUEST_CANCELLED, "AbortError"));
     return signal;
   }
-  get [_mimeType]() {
-    const values = getDecodeSplitHeader(
-      headerListFromHeaders(this[_headers]),
-      "Content-Type",
-    );
-    return extractMimeType(values);
+  if (signal === undefined) {
+    const signal = newSignal();
+    data.signalCache = signal;
+    data.request.onCancel?.(() => {
+      signal[signalAbort](new DOMException(MESSAGE_REQUEST_CANCELLED, "AbortError"));
+    });
+    return signal;
   }
-  get [_body]() {
-    return this[_request].body;
-  }
+  return signal;
+}
 
+function requestMimeType(request) {
+  return extractMimeType(getDecodeSplitHeader(headerListFromHeaders(requestHeaders(request)), "Content-Type"));
+}
+
+function requestBody(request) {
+  return requestData(request).request.body;
+}
+
+class Request {
   /**
    * https://fetch.spec.whatwg.org/#dom-request
    * @param {RequestInfo} input
@@ -369,7 +333,7 @@ class Request {
    */
   constructor(input, init = undefined) {
     if (input === _brand) {
-      this[_brand] = _brand;
+      initializeRequest(this);
       return;
     }
 
@@ -382,7 +346,7 @@ class Request {
     );
     init = webidl.converters["RequestInit"](init, prefix, "Argument 2");
 
-    this[_brand] = _brand;
+    initializeRequest(this);
 
     /** @type {InnerRequest} */
     let request;
@@ -402,14 +366,14 @@ class Request {
         true,
       );
     } else { // 6.
-      if (!ObjectPrototypeIsPrototypeOf(RequestPrototype, input)) {
+      if (!core.hasHostInterface(input, "Request")) {
         throw new TypeError("Unreachable");
       }
-      const originalReq = input[_request];
+      const originalReq = requestData(input).request;
       // fold in of step 12 from below
       request = cloneInnerRequest(originalReq, true);
       request.redirectCount = 0; // reset to 0 - cloneInnerRequest copies the value
-      signal = input[_signal];
+      signal = requestSignal(input);
     }
 
     // 12. is folded into the else statement of step 6 above.
@@ -522,19 +486,19 @@ class Request {
     }
 
     // 28.
-    this[_request] = request;
+    requestData(this).request = request;
 
     // 29 & 30.
     if (signal !== null) {
-      this[_signalCache] = createDependentAbortSignal([signal], prefix);
+      requestData(this).signalCache = createDependentAbortSignal([signal], prefix);
     }
 
     // 31.
-    this[_headers] = headersFromHeaderList(request.headerList, "request");
+    requestData(this).headersCache = headersFromHeaderList(request.headerList, "request");
 
     // 33.
     if (init.headers || ObjectKeys(init).length > 0) {
-      const headerList = headerListFromHeaders(this[_headers]);
+      const headerList = headerListFromHeaders(requestHeaders(this));
       const headers = init.headers ?? ArrayPrototypeSlice(
         headerList,
         0,
@@ -543,13 +507,13 @@ class Request {
       if (headerList.length !== 0) {
         ArrayPrototypeSplice(headerList, 0, headerList.length);
       }
-      fillHeaders(this[_headers], headers);
+      fillHeaders(requestHeaders(this), headers);
     }
 
     // 34.
     let inputBody = null;
-    if (ObjectPrototypeIsPrototypeOf(RequestPrototype, input)) {
-      inputBody = input[_body];
+    if (core.hasHostInterface(input, "Request")) {
+      inputBody = requestBody(input);
     }
 
     // 35.
@@ -568,8 +532,8 @@ class Request {
     if (init.body !== undefined && init.body !== null) {
       const res = extractBody(init.body);
       initBody = res.body;
-      if (res.contentType !== null && !this[_headers].has("content-type")) {
-        this[_headers].append("Content-Type", res.contentType);
+      if (res.contentType !== null && !requestHeaders(this).has("content-type")) {
+        requestHeaders(this).append("Content-Type", res.contentType);
       }
     }
 
@@ -581,7 +545,7 @@ class Request {
 
     // 41.
     if (initBody === null && inputBody !== null) {
-      if (input[_body] && input[_body].unusable()) {
+      if (requestBody(input) && requestBody(input).unusable()) {
         throw new TypeError("Input request's body is unusable");
       }
       finalBody = inputBody.createProxy();
@@ -593,61 +557,61 @@ class Request {
 
   get method() {
     webidl.assertBranded(this, RequestPrototype);
-    if (this[_method]) {
-      return this[_method];
+    if (requestData(this).method) {
+      return requestData(this).method;
     }
-    this[_method] = this[_request].method;
-    return this[_method];
+    requestData(this).method = requestData(this).request.method;
+    return requestData(this).method;
   }
 
   get url() {
     webidl.assertBranded(this, RequestPrototype);
-    if (this[_url]) {
-      return this[_url];
+    if (requestData(this).url) {
+      return requestData(this).url;
     }
 
-    this[_url] = this[_request].url();
-    return this[_url];
+    requestData(this).url = requestData(this).request.url();
+    return requestData(this).url;
   }
 
   get headers() {
     webidl.assertBranded(this, RequestPrototype);
-    return this[_headers];
+    return requestHeaders(this);
   }
 
   get redirect() {
     webidl.assertBranded(this, RequestPrototype);
-    return this[_request].redirectMode;
+    return requestData(this).request.redirectMode;
   }
 
   get cache() {
     webidl.assertBranded(this, RequestPrototype);
-    return this[_request].cacheMode ?? "default";
+    return requestData(this).request.cacheMode ?? "default";
   }
 
   get credentials() {
     webidl.assertBranded(this, RequestPrototype);
-    return this[_request].credentialsMode ?? "same-origin";
+    return requestData(this).request.credentialsMode ?? "same-origin";
   }
 
   get integrity() {
     webidl.assertBranded(this, RequestPrototype);
-    return this[_request].integrity ?? "";
+    return requestData(this).request.integrity ?? "";
   }
 
   get keepalive() {
     webidl.assertBranded(this, RequestPrototype);
-    return this[_request].keepalive ?? false;
+    return requestData(this).request.keepalive ?? false;
   }
 
   get mode() {
     webidl.assertBranded(this, RequestPrototype);
-    return this[_request].mode ?? "cors";
+    return requestData(this).request.mode ?? "cors";
   }
 
   get referrer() {
     webidl.assertBranded(this, RequestPrototype);
-    const referrer = this[_request].referrer;
+    const referrer = requestData(this).request.referrer;
     if (referrer === undefined || referrer === "client") {
       return "about:client";
     }
@@ -659,33 +623,33 @@ class Request {
 
   get referrerPolicy() {
     webidl.assertBranded(this, RequestPrototype);
-    return this[_request].referrerPolicy ?? "";
+    return requestData(this).request.referrerPolicy ?? "";
   }
 
   get signal() {
     webidl.assertBranded(this, RequestPrototype);
-    return this[_signal];
+    return requestSignal(this);
   }
 
   clone() {
     const prefix = "Failed to execute 'Request.clone'";
     webidl.assertBranded(this, RequestPrototype);
-    if (this[_body] && this[_body].unusable()) {
+    if (requestBody(this) && requestBody(this).unusable()) {
       throw new TypeError("Body is unusable");
     }
-    const clonedReq = cloneInnerRequest(this[_request]);
+    const clonedReq = cloneInnerRequest(requestData(this).request);
 
-    const materializedSignal = this[_signal];
+    const materializedSignal = requestSignal(this);
     const clonedSignal = createDependentAbortSignal(
       [materializedSignal],
       prefix,
     );
 
     const request = new Request(_brand);
-    request[_request] = clonedReq;
-    request[_signalCache] = clonedSignal;
-    headerListFromHeaders(this[_headers]);
-    request[_headersGuard] = guardFromHeaders(this[_headers]);
+    requestData(request).request = clonedReq;
+    requestData(request).signalCache = clonedSignal;
+    headerListFromHeaders(requestHeaders(this));
+    requestData(request).headersGuard = guardFromHeaders(requestHeaders(this));
     return request;
   }
 
@@ -709,15 +673,15 @@ class Request {
 
 webidl.configureInterface(Request);
 const RequestPrototype = Request.prototype;
-markNotSerializable(RequestPrototype);
-mixinBody(RequestPrototype, _body, _mimeType);
+webidl.registerInterfaceBrand(RequestPrototype, value => core.hasHostInterface(value, "Request"));
+mixinBody(RequestPrototype, requestBody, requestMimeType);
 const requestJson = RequestPrototype.json;
 ObjectDefineProperty(RequestPrototype, "json", {
   __proto__: null,
   value: function json() {
     try {
       webidl.assertBranded(this, RequestPrototype);
-      const text = this[_request].consumeTextBody?.();
+      const text = requestData(this).request.consumeTextBody?.();
       if (text !== null && text !== undefined) {
         return PromiseResolve(JSONParse(text));
       }
@@ -738,7 +702,7 @@ webidl.converters["Request"] = webidl.createInterfaceConverter(
 webidl.converters["RequestInfo_DOMString"] = (V, prefix, context, opts) => {
   // Union for (Request or USVString)
   if (typeof V == "object") {
-    if (ObjectPrototypeIsPrototypeOf(RequestPrototype, V)) {
+    if (core.hasHostInterface(V, "Request")) {
       return webidl.converters["Request"](V, prefix, context, opts);
     }
   }
@@ -838,16 +802,16 @@ webidl.converters["RequestInit"] = webidl.createDictionaryConverter(
  * @returns {InnerRequest}
  */
 function toInnerRequest(request) {
-  return request[_request];
+  return requestData(request).request;
 }
 
 function requestHeadersExposed(request) {
-  return request?.[_headersCache] !== undefined;
+  return requestData(request)?.headersCache !== undefined;
 }
 
 function cacheRequestHeaders(request) {
-  if (request?.[_headersCache] !== undefined) {
-    headerListFromHeaders(request[_headersCache]);
+  if (requestData(request)?.headersCache !== undefined) {
+    headerListFromHeaders(requestData(request).headersCache);
   }
 }
 
@@ -858,25 +822,25 @@ function cacheRequestHeaders(request) {
  */
 function fromInnerRequest(inner, guard) {
   const request = new Request(_brand);
-  request[_request] = inner;
-  request[_headersGuard] = guard;
+  requestData(request).request = inner;
+  requestData(request).headersGuard = guard;
   return request;
 }
 
 const MESSAGE_REQUEST_CANCELLED = "The request has been cancelled.";
 
 function abortRequest(request) {
-  if (request[_signalCache] !== undefined) {
-    request[_signal][signalAbort](
+  if (requestData(request).signalCache !== undefined) {
+    requestSignal(request)[signalAbort](
       new DOMException(MESSAGE_REQUEST_CANCELLED, "AbortError"),
     );
   } else {
-    request[_signalCache] = false;
+    requestData(request).signalCache = false;
   }
 }
 
 function getCachedAbortSignal(request) {
-  return request[_signalCache];
+  return requestData(request).signalCache;
 }
 
 // For testing

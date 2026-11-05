@@ -13,7 +13,6 @@ const {
   ObjectPrototypeIsPrototypeOf,
   RegExpPrototypeTest,
   SafeArrayIterator,
-  Symbol,
   SymbolFor,
   SymbolIterator,
   StringPrototypeReplaceAll,
@@ -22,9 +21,6 @@ const {
 } = primordials;
 
 const webidl = core.loadExtScript("ext:deno_webidl/00_webidl.js");
-const { markNotSerializable } = core.loadExtScript(
-  "ext:deno_web/13_message_port.js",
-);
 const {
   byteLowerCase,
   collectHttpQuotedString,
@@ -35,25 +31,17 @@ const {
   httpTrim,
 } = core.loadExtScript("ext:deno_web/00_infra.js");
 
-const _headerList = Symbol("header list");
-const _lowerNames = Symbol("lowercase header names");
-const _iterableHeaders = Symbol("iterable headers");
-const _iterableHeadersCache = Symbol("iterable headers cache");
-const _guard = Symbol("guard");
-const _headerListGetter = Symbol("header list getter");
-const _headerGet = Symbol("header get");
-const _headerTarget = Symbol("header target");
 const _brand = webidl.brand;
 const webidlConverterByteString = webidl.converters.ByteString;
 const webidlConverterSequenceByteString =
   webidl.converters["sequence<ByteString>"];
 
 /**
- * Returns a parallel array to `headers[_headerList]` whose i-th entry is the
- * byte-lowercased form of `headers[_headerList][i][0]`.
+ * Returns a parallel array to the private header list, whose i-th entry is the
+ * byte-lowercased name of that list's i-th header.
  *
  * Rebuilt from scratch when the lengths diverge, which catches the
- * `Request` constructor's splice/refill block, which empties `_headerList`
+ * `Request` constructor's splice/refill block, which empties the header list
  * without going through `appendHeader` / `set` / `delete`.
  *
  * `initializeAResponse` (`23_response.js`) reads via `ensureLowerNames`
@@ -61,14 +49,14 @@ const webidlConverterSequenceByteString =
  * relies on the length-divergence rebuild.
  */
 function ensureLowerNames(headers) {
-  let lower = headers[_lowerNames];
+  let lower = headersData(headers).lowerNames;
   const list = headerListFromHeaders(headers);
   if (lower === null || lower.length !== list.length) {
     lower = [];
     for (let i = 0; i < list.length; i++) {
       lower[i] = byteLowerCase(list[i][0]);
     }
-    headers[_lowerNames] = lower;
+    headersData(headers).lowerNames = lower;
   }
   return lower;
 }
@@ -177,7 +165,7 @@ function appendHeader(headers, name, value) {
   }
 
   // 3.
-  if (headers[_guard] == "immutable") {
+  if (headersData(headers).guard == "immutable") {
     throw new TypeError("Cannot change header: headers are immutable");
   }
 
@@ -225,15 +213,15 @@ function fillHeaderList(list, object, prefix, context, opts) {
   // responses just to tweak a header). The source's entries are already
   // validated byte strings, so copy them directly and skip the expensive
   // webidl `sequence<sequence<ByteString>>` conversion plus per-entry
-  // revalidation. `_iterableHeaders` yields the same combined+sorted entries
+  // revalidation. `iterableHeaders` yields the same combined+sorted entries
   // the slow path would produce, so the result is identical.
-  if (ObjectPrototypeIsPrototypeOf(HeadersPrototype, object)) {
-    // `_iterableHeaders` yields already-combined, sorted, lowercased and
+  if (core.hasHostInterface(object, "Headers")) {
+    // `iterableHeaders` yields already-combined, sorted, lowercased and
     // validated entries (one per name, except set-cookie), which is exactly the
     // shape `fillHeaderList` builds for a fresh list -- so push them straight in
     // and skip both the webidl conversion and `appendHeaderToList`'s per-entry
     // revalidation and casing dedup.
-    const entries = object[_iterableHeaders];
+    const entries = iterableHeaders(object);
     for (let i = 0; i < entries.length; ++i) {
       const entry = entries[i];
       ArrayPrototypePush(list, [entry[0], entry[1]]);
@@ -349,80 +337,83 @@ function getDecodeSplitHeader(list, name) {
   return values;
 }
 
-class Headers {
-  /** @type {HeaderList} */
-  [_headerList] = [];
-  /** @type {string[] | null} parallel to _headerList, lazily populated */
-  [_lowerNames] = null;
-  [_headerListGetter] = null;
-  [_headerGet] = null;
-  [_headerTarget] = null;
-  /** @type {"immutable" | "request" | "request-no-cors" | "response" | "none"} */
-  [_guard];
+const headersData = value => core.hostInterfaceData(value, "Headers");
 
-  get [_iterableHeaders]() {
-    const list = headerListFromHeaders(this);
+function initializeHeaders(headers) {
+  core.markHostInterface(headers, "Headers");
+  core.markUnserializableHostObject(headers);
+  const data = headersData(headers);
+  data.headerList = [];
+  data.lowerNames = null;
+  data.headerListGetter = null;
+  data.headerGet = null;
+  data.headerTarget = null;
+}
 
-    if (
-      this[_guard] === "immutable" &&
-      this[_iterableHeadersCache] !== undefined
-    ) {
-      return this[_iterableHeadersCache];
-    }
+function iterableHeaders(headers) {
+  const list = headerListFromHeaders(headers);
 
-    // The order of steps are not similar to the ones suggested by the
-    // spec but produce the same result.
-    const seenHeaders = { __proto__: null };
-    const entries = [];
-    for (let i = 0; i < list.length; ++i) {
-      const entry = list[i];
-      const name = byteLowerCase(entry[0]);
-      const value = entry[1];
-      if (value === null) throw new TypeError("Unreachable");
-      // The following if statement is not spec compliant.
-      // `set-cookie` is the only header that can not be concatenated,
-      // so must be given to the user as multiple headers.
-      // The else block of the if statement is spec compliant again.
-      if (name === "set-cookie") {
-        ArrayPrototypePush(entries, [name, value]);
-      } else {
-        // The following code has the same behaviour as getHeader()
-        // at the end of loop. But it avoids looping through the entire
-        // list to combine multiple values with same header name. It
-        // instead gradually combines them as they are found.
-        const seenHeaderIndex = seenHeaders[name];
-        if (seenHeaderIndex !== undefined) {
-          const entryValue = entries[seenHeaderIndex][1];
-          entries[seenHeaderIndex][1] = entryValue.length > 0
-            ? entryValue + "\x2C\x20" + value
-            : value;
-        } else {
-          seenHeaders[name] = entries.length; // store header index in entries array
-          ArrayPrototypePush(entries, [name, value]);
-        }
-      }
-    }
-
-    ArrayPrototypeSort(
-      entries,
-      (a, b) => {
-        const akey = a[0];
-        const bkey = b[0];
-        if (akey > bkey) return 1;
-        if (akey < bkey) return -1;
-        return 0;
-      },
-    );
-
-    this[_iterableHeadersCache] = entries;
-
-    return entries;
+  if (
+    headersData(headers).guard === "immutable" &&
+    headersData(headers).iterableHeadersCache !== undefined
+  ) {
+    return headersData(headers).iterableHeadersCache;
   }
 
+  // The order of steps are not similar to the ones suggested by the
+  // spec but produce the same result.
+  const seenHeaders = { __proto__: null };
+  const entries = [];
+  for (let i = 0; i < list.length; ++i) {
+    const entry = list[i];
+    const name = byteLowerCase(entry[0]);
+    const value = entry[1];
+    if (value === null) throw new TypeError("Unreachable");
+    // The following if statement is not spec compliant.
+    // `set-cookie` is the only header that can not be concatenated,
+    // so must be given to the user as multiple headers.
+    // The else block of the if statement is spec compliant again.
+    if (name === "set-cookie") {
+      ArrayPrototypePush(entries, [name, value]);
+    } else {
+      // The following code has the same behaviour as getHeader()
+      // at the end of loop. But it avoids looping through the entire
+      // list to combine multiple values with same header name. It
+      // instead gradually combines them as they are found.
+      const seenHeaderIndex = seenHeaders[name];
+      if (seenHeaderIndex !== undefined) {
+        const entryValue = entries[seenHeaderIndex][1];
+        entries[seenHeaderIndex][1] = entryValue.length > 0
+          ? entryValue + "\x2C\x20" + value
+          : value;
+      } else {
+        seenHeaders[name] = entries.length; // store header index in entries array
+        ArrayPrototypePush(entries, [name, value]);
+      }
+    }
+  }
+
+  ArrayPrototypeSort(
+    entries,
+    (a, b) => {
+      const akey = a[0];
+      const bkey = b[0];
+      if (akey > bkey) return 1;
+      if (akey < bkey) return -1;
+      return 0;
+    },
+  );
+
+  headersData(headers).iterableHeadersCache = entries;
+
+  return entries;
+}
+
+class Headers {
   /** @param {HeadersInit} [init] */
   constructor(init = undefined) {
     if (init === _brand) {
-      this[_brand] = _brand;
+      initializeHeaders(this);
       return;
     }
 
@@ -431,8 +422,8 @@ class Headers {
       init = webidl.converters["HeadersInit"](init, prefix, "Argument 1");
     }
 
-    this[_brand] = _brand;
-    this[_guard] = "none";
+    initializeHeaders(this);
+    headersData(this).guard = "none";
     if (init !== undefined) {
       fillHeaders(this, init);
     }
@@ -463,7 +454,7 @@ class Headers {
     if (!checkHeaderNameForHttpTokenCodePoint(name)) {
       throw new TypeError(`Invalid header name: "${name}"`);
     }
-    if (this[_guard] == "immutable") {
+    if (headersData(this).guard == "immutable") {
       throw new TypeError("Cannot change headers: headers are immutable");
     }
 
@@ -495,11 +486,11 @@ class Headers {
       name === "authorization" || name === "content-type" ||
       name === "accept" || name === "host"
     ) {
-      const headerGet = this[_headerGet];
+      const headerGet = headersData(this).headerGet;
       if (headerGet !== null) {
         return headerGet(name);
       }
-      const headerTarget = this[_headerTarget];
+      const headerTarget = headersData(this).headerTarget;
       if (headerTarget !== null) {
         return headerTarget.header(name);
       }
@@ -512,11 +503,11 @@ class Headers {
       throw new TypeError(`Invalid header name: "${name}"`);
     }
 
-    const headerGet = this[_headerGet];
+    const headerGet = headersData(this).headerGet;
     if (headerGet !== null) {
       return headerGet(name);
     }
-    const headerTarget = this[_headerTarget];
+    const headerTarget = headersData(this).headerTarget;
     if (headerTarget !== null) {
       return headerTarget.header(name);
     }
@@ -595,7 +586,7 @@ class Headers {
       throw new TypeError(`Invalid header value: "${value}"`);
     }
 
-    if (this[_guard] == "immutable") {
+    if (headersData(this).guard == "immutable") {
       throw new TypeError("Cannot change headers: headers are immutable");
     }
 
@@ -653,11 +644,11 @@ class Headers {
   }
 }
 
-webidl.mixinPairIterable("Headers", Headers, _iterableHeaders, 0, 1);
+webidl.mixinPairIterable("Headers", Headers, iterableHeaders, 0, 1);
 
 webidl.configureInterface(Headers);
 const HeadersPrototype = Headers.prototype;
-markNotSerializable(HeadersPrototype);
+webidl.registerInterfaceBrand(HeadersPrototype, value => core.hasHostInterface(value, "Headers"));
 
 webidl.converters["HeadersInit"] = (V, prefix, context, opts) => {
   // Union for (sequence<sequence<ByteString>> or record<ByteString, ByteString>)
@@ -697,31 +688,31 @@ webidl.converters["Headers"] = webidl.createInterfaceConverter(
  */
 function headersFromHeaderList(list, guard) {
   const headers = new Headers(_brand);
-  headers[_headerList] = list;
-  headers[_lowerNames] = null;
-  headers[_guard] = guard;
+  headersData(headers).headerList = list;
+  headersData(headers).lowerNames = null;
+  headersData(headers).guard = guard;
   return headers;
 }
 
 function headersFromHeaderListLazy(headerList, guard, getHeader) {
   const headers = new Headers(_brand);
-  headers[_headerList] = null;
-  headers[_lowerNames] = null;
-  headers[_headerListGetter] = headerList;
-  headers[_headerGet] = getHeader;
-  headers[_headerTarget] = null;
-  headers[_guard] = guard;
+  headersData(headers).headerList = null;
+  headersData(headers).lowerNames = null;
+  headersData(headers).headerListGetter = headerList;
+  headersData(headers).headerGet = getHeader;
+  headersData(headers).headerTarget = null;
+  headersData(headers).guard = guard;
   return headers;
 }
 
 function headersFromHeaderListLazyTarget(target, guard) {
   const headers = new Headers(_brand);
-  headers[_headerList] = null;
-  headers[_lowerNames] = null;
-  headers[_headerListGetter] = null;
-  headers[_headerGet] = null;
-  headers[_headerTarget] = target;
-  headers[_guard] = guard;
+  headersData(headers).headerList = null;
+  headersData(headers).lowerNames = null;
+  headersData(headers).headerListGetter = null;
+  headersData(headers).headerGet = null;
+  headersData(headers).headerTarget = target;
+  headersData(headers).guard = guard;
   return headers;
 }
 
@@ -732,9 +723,9 @@ function headersFromHeaderListLazyTarget(target, guard) {
  * IMPORTANT: callers must change the list length when mutating (push, splice,
  * or empty-and-refill). Equal-length in-place mutations
  * (`list[i] = [...]` or `list[i][0] = ...`, pop-and-push pairs) silently leave
- * the parallel `[_lowerNames]` cache (see `ensureLowerNames`) stale, because
- * the rebuild trigger is a length divergence between `_headerList` and
- * `[_lowerNames]`. There is currently no caller doing this; the next one to
+ * the parallel lowercase-name cache (see `ensureLowerNames`) stale, because
+ * the rebuild trigger is a length divergence between the two private arrays.
+ * There is currently no caller doing this; the next one to
  * reach for an equal-length in-place mutation needs to add a cache-invalidator
  * (and a test) alongside it.
  *
@@ -742,15 +733,15 @@ function headersFromHeaderListLazyTarget(target, guard) {
  * @returns {HeaderList}
  */
 function headerListFromHeaders(headers) {
-  let list = headers[_headerList];
+  let list = headersData(headers).headerList;
   if (list === null) {
-    const target = headers[_headerTarget];
-    list = target === null ? headers[_headerListGetter]() : target.headerList;
-    headers[_headerList] = list;
-    headers[_lowerNames] = null;
-    headers[_headerListGetter] = null;
-    headers[_headerGet] = null;
-    headers[_headerTarget] = null;
+    const target = headersData(headers).headerTarget;
+    list = target === null ? headersData(headers).headerListGetter() : target.headerList;
+    headersData(headers).headerList = list;
+    headersData(headers).lowerNames = null;
+    headersData(headers).headerListGetter = null;
+    headersData(headers).headerGet = null;
+    headersData(headers).headerTarget = null;
   }
   return list;
 }
@@ -760,7 +751,7 @@ function headerListFromHeaders(headers) {
  * @returns {"immutable" | "request" | "request-no-cors" | "response" | "none"}
  */
 function guardFromHeaders(headers) {
-  return headers[_guard];
+  return headersData(headers).guard;
 }
 
 /**
@@ -768,7 +759,7 @@ function guardFromHeaders(headers) {
  * @returns {[string, string][]}
  */
 function headersEntries(headers) {
-  return headers[_iterableHeaders];
+  return iterableHeaders(headers);
 }
 
 return {

@@ -122,6 +122,7 @@ builtin_ops! {
   ops_builtin_v8::op_create_host_exception,
   ops_builtin_v8::op_create_console_method,
   ops_builtin_v8::op_mark_host_interface,
+  ops_builtin_v8::op_mark_unserializable_host_object,
   ops_builtin_v8::op_has_host_interface,
   ops_builtin_v8::op_host_interface_data,
   ops_builtin_v8::op_set_host_object_tag,

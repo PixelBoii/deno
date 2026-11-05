@@ -442,8 +442,17 @@ impl ServerCallback {
     scope: &mut v8::PinScope<'s, '_>,
     value: v8::Local<'s, v8::Value>,
   ) -> Option<DirectResponse> {
-    let response = v8::Local::<v8::Object>::try_from(value).ok()?;
-
+    if value.is_proxy() {
+      return None;
+    }
+    let instance = v8::Local::<v8::Object>::try_from(value).ok()?;
+    // Fetch and the JS server paths share this actual instance's private data.
+    let name = v8::String::new(scope, "Deno.core.hostInterfaceData::Response")?;
+    let key = v8::Private::for_api(scope, Some(name));
+    let response = instance
+      .get_private(scope, key)?
+      .try_cast::<v8::Object>()
+      .ok()?;
     let native_key = v8::Local::new(scope, &self.serve_native_response_key);
     let native = response.get(scope, native_key)?;
     if let Ok(native) = v8::Local::<v8::External>::try_from(native) {
