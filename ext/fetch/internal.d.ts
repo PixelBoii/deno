@@ -43,6 +43,9 @@ declare module "ext:deno_fetch/21_formdata.js" {
     boundary: string | undefined,
   ): FormData;
   function formDataFromEntries(entries: FormDataEntry[]): FormData;
+  function setFormDataFormInitializer(
+    initialize: (target: FormData, form: unknown) => void,
+  ): void;
 }
 
 declare module "ext:deno_fetch/22_body.js" {

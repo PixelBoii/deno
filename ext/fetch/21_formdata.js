@@ -9,6 +9,7 @@ const {
 } = core.loadExtScript("ext:deno_web/09_file.js");
 const {
   ArrayPrototypePush,
+  FunctionPrototypeCall,
   ArrayPrototypeSlice,
   ArrayPrototypeSplice,
   MapPrototypeGet,
@@ -74,14 +75,18 @@ function createEntry(name, value, filename) {
  * @property {FormDataEntryValue} value
  */
 
+let formInitializer;
+function setFormDataFormInitializer(initialize) { formInitializer = initialize; }
+
 class FormData {
-  /** @param {void} form */
-  constructor(form) {
-    if (form !== undefined) {
+  /** @param {unknown} form */
+  constructor(form = undefined) {
+    if (form !== undefined && formInitializer === undefined) {
       webidl.illegalConstructor();
     }
     core.markHostInterface(this, "FormData");
     formDataState(this).entries = [];
+    if (form !== undefined) formInitializer(this, form);
   }
 
   /**
@@ -273,6 +278,7 @@ webidl.mixinPairIterable("FormData", FormData, target => formDataState(target).e
 
 webidl.configureInterface(FormData);
 const FormDataPrototype = FormData.prototype;
+const appendParsedEntry = FormDataPrototype.append;
 webidl.registerInterfaceBrand(FormDataPrototype, value => core.hasHostInterface(value, "FormData"));
 
 const ESCAPE_FILENAME_PATTERN = new SafeRegExp(/\r?\n|\r/g);
@@ -590,13 +596,13 @@ class MultipartParser {
               const blob = new Blob([content], {
                 type: headers.get("Content-Type") || "application/octet-stream",
               });
-              formData.append(
+              FunctionPrototypeCall(appendParsedEntry, formData,
                 name,
                 blob,
                 decodeLatin1StringAsUtf8(latin1Filename),
               );
             } else {
-              formData.append(name, core.decode(content));
+              FunctionPrototypeCall(appendParsedEntry, formData, name, core.decode(content));
             }
           }
 
@@ -640,6 +646,7 @@ webidl.converters["FormData"] = webidl
 
 return {
   FormData,
+  setFormDataFormInitializer,
   formDataFromEntries,
   FormDataPrototype,
   formDataToBlob,
