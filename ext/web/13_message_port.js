@@ -1098,7 +1098,7 @@ function isOwnPrototypeObject(value, sym) {
 // Fetch types register actual instances with the native private uncloneable
 // marker, which is also enforced for nested values by V8's serializer.
 
-function structuredClone(value, options) {
+function structuredClone(value, options = undefined) {
   // Fast path for primitives that StructuredSerialize returns by reference:
   // null, undefined, boolean, number, string, bigint. These don't need the
   // StructuredSerializeOptions dictionary conversion, the not-serializable
