@@ -71,6 +71,7 @@ const {
   EventTarget,
   MessageEvent,
   setEventTargetData,
+  setEventTargetListenerChangeHook,
   setIsTrusted,
 } = core.loadExtScript("ext:deno_web/02_event.js");
 
@@ -182,6 +183,15 @@ function createMessagePort(id) {
   port[_enabled] = false;
   port[_messageEventListenerCount] = 0;
   port[_refed] = false;
+  // Ref counts follow actual listener records, including duplicate rejection,
+  // once dispatch and AbortSignal removal. Keep bookkeeping off the public
+  // prototype chain so MessagePort directly extends EventTarget.
+  setEventTargetListenerChangeHook(port, (type, change) => {
+    if (type === "message") {
+      port[_messageEventListenerCount] += change;
+      port[refMessagePort](port[_messageEventListenerCount] > 0);
+    }
+  });
   return port;
 }
 
@@ -230,36 +240,7 @@ function dispatchPortMessageData(target, data) {
   return true;
 }
 
-// Internal intermediate class that holds the ref-count override of
-// add/removeEventListener. The user-visible `MessagePort` class extends
-// this so `Object.getOwnPropertyNames(MessagePort.prototype)` matches
-// Node's reduced surface (no add/removeEventListener as own props), while
-// the listener-count bookkeeping still happens for any port instance.
-class _MessagePortBase extends EventTarget {
-  removeEventListener(...args) {
-    if (args[0] === "message") {
-      if (--this[_messageEventListenerCount] === 0 && this[_refed]) {
-        // Use refMessagePort so the underlying recv op promise is also
-        // unrefed in lock-step. Otherwise the runtime's
-        // hasMessageEventListener() check (which gates worker exit) and
-        // the op's ref count can disagree.
-        this[refMessagePort](false);
-      }
-    }
-    super.removeEventListener(...new SafeArrayIterator(args));
-  }
-
-  addEventListener(...args) {
-    if (args[0] === "message") {
-      if (++this[_messageEventListenerCount] === 1 && !this[_refed]) {
-        this[refMessagePort](true);
-      }
-    }
-    super.addEventListener(...new SafeArrayIterator(args));
-  }
-}
-
-class MessagePort extends _MessagePortBase {
+class MessagePort extends EventTarget {
   /** @type {boolean} */
   [_enabled] = false;
   [_refed] = false;

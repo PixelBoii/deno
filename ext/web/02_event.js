@@ -881,6 +881,7 @@ function removeListener(
   }
 
   ArrayPrototypeSplice(targetListeners[type], index, 1);
+  targetListeners[listenerChangeHook]?.(type, -1);
   if (listener.abortListener) {
     listener.signal.removeEventListener("abort", listener.abortListener);
     listener.signal = undefined;
@@ -915,12 +916,17 @@ function retarget(a, b) {
 // Accessors for non-public data
 
 const eventTargetData = Symbol();
+const listenerChangeHook = Symbol("listenerChangeHook");
 const kResistStopImmediatePropagation = Symbol(
   "kResistStopImmediatePropagation",
 );
 
 function setEventTargetData(target) {
   target[eventTargetData] = getDefaultTargetData();
+}
+
+function setEventTargetListenerChangeHook(target, hook) {
+  target[eventTargetData].listeners[listenerChangeHook] = hook;
 }
 
 function getAssignedSlot(target) {
@@ -1057,6 +1063,7 @@ class EventTarget {
       signal,
       abortListener,
     });
+    listeners[listenerChangeHook]?.(type, 1);
   }
 
   removeEventListener(
@@ -1747,6 +1754,7 @@ return {
   reportException,
   saveGlobalThisReference,
   setEventTargetData,
+  setEventTargetListenerChangeHook,
   setIsTrusted,
   setTarget,
 };
