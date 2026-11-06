@@ -2083,7 +2083,7 @@ function webMessagePortToNodeMessagePort(port: MessagePort) {
     // event after the current synchronous turn. This matches Node's
     // MessagePort, where close events fire on the next tick.
     queueMicrotask(() => {
-      port[refMessagePort](false);
+      refMessagePort(port, false);
       // Mark the port as detached so `util.inspect(port)` shows
       // `active: false` after the close event has fired. The underlying
       // resource may already be closed (recv loop saw end-of-stream);
@@ -2101,10 +2101,10 @@ function webMessagePortToNodeMessagePort(port: MessagePort) {
     });
   };
   port.unref = () => {
-    port[refMessagePort](false);
+    refMessagePort(port, false);
   };
   port.ref = () => {
-    port[refMessagePort](true);
+    refMessagePort(port, true);
   };
   const webPostMessage = port.postMessage;
   port.postMessage = function postMessage(message, transferOrOptions) {

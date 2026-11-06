@@ -32,9 +32,11 @@ const {
   PromiseResolve,
   queueMicrotask,
   ReflectApply,
+  ReflectDeleteProperty,
   SafeArrayIterator,
   SafeSet,
   SafeWeakMap,
+  SafeWeakSet,
   StringFromCharCode,
   StringPrototypeCharCodeAt,
   Symbol,
@@ -46,7 +48,10 @@ const {
   TypeErrorPrototype,
   Uint8Array,
   WeakMapPrototypeGet,
+  WeakMapPrototypeHas,
   WeakMapPrototypeSet,
+  WeakSetPrototypeAdd,
+  WeakSetPrototypeHas,
 } = primordials;
 const {
   InterruptedPrototype,
@@ -81,6 +86,8 @@ const { DOMException } = core.loadExtScript("ext:deno_web/01_dom_exception.js");
 // either due to the existence of "message" event listeners or
 // explicit calls to ref/unref (in the case of node message ports)
 let refedMessagePortsCount = 0;
+let privateBrowserBrands = false;
+const messageChannels = new SafeWeakSet();
 
 class MessageChannel {
   /** @type {MessagePort} */
@@ -89,7 +96,8 @@ class MessageChannel {
   #port2;
 
   constructor() {
-    this[webidl.brand] = webidl.brand;
+    if (!privateBrowserBrands) this[webidl.brand] = webidl.brand;
+    WeakSetPrototypeAdd(messageChannels, this);
     const { 0: port1Id, 1: port2Id } = opCreateEntangledMessagePort();
     const port1 = createMessagePort(port1Id);
     const port2 = createMessagePort(port2Id);
@@ -128,18 +136,21 @@ const MessageChannelPrototype = MessageChannel.prototype;
 const MessagePortReceiveMessageOnPortSymbol = Symbol(
   "MessagePortReceiveMessageOnPort",
 );
-const _enabled = Symbol("enabled");
-const _refed = Symbol("refed");
-const _messageEventListenerCount = Symbol("messageEventListenerCount");
 const nodeWorkerThreadCloseCb = Symbol("nodeWorkerThreadCloseCb");
 const nodeWorkerThreadCloseCbInvoked = Symbol("nodeWorkerThreadCloseCbInvoked");
-const refMessagePort = Symbol("refMessagePort");
 /** It is used by 99_main.js and worker_threads to
  * unref/ref on the global message event handler count. */
 const unrefParentPort = Symbol("unrefParentPort");
 
 /** @type {WeakMap<MessagePort, number | null>} */
 const messagePortIds = new SafeWeakMap();
+const messagePortStates = new SafeWeakMap();
+
+function getMessagePortState(port) {
+  const state = WeakMapPrototypeGet(messagePortStates, port);
+  if (state === undefined) throw new TypeError("Illegal invocation");
+  return state;
+}
 
 /**
  * @param {MessagePort} port
@@ -159,6 +170,27 @@ function getMessagePortId(port) {
  */
 function setMessagePortId(port, id) {
   WeakMapPrototypeSet(messagePortIds, port, id);
+  if (!WeakMapPrototypeHas(messagePortStates, port)) {
+    WeakMapPrototypeSet(messagePortStates, port, {
+      enabled: false,
+      refed: false,
+      dataPromise: undefined,
+      messageEventListenerCount: 0,
+    });
+  }
+}
+
+function refMessagePort(port, ref) {
+  const state = getMessagePortState(port);
+  if (ref && !state.refed) {
+    refedMessagePortsCount++;
+    if (state.dataPromise) core.refOpPromise(state.dataPromise);
+    state.refed = true;
+  } else if (!ref && state.refed) {
+    refedMessagePortsCount--;
+    if (state.dataPromise) core.unrefOpPromise(state.dataPromise);
+    state.refed = false;
+  }
 }
 
 /**
@@ -177,19 +209,18 @@ function takeMessagePortId(port) {
  */
 function createMessagePort(id) {
   const port = webidl.createBranded(MessagePort);
+  if (privateBrowserBrands) ReflectDeleteProperty(port, webidl.brand);
   core.setHostObjectTag(port, "MessagePort");
   setEventTargetData(port);
   setMessagePortId(port, id);
-  port[_enabled] = false;
-  port[_messageEventListenerCount] = 0;
-  port[_refed] = false;
+  const state = getMessagePortState(port);
   // Ref counts follow actual listener records, including duplicate rejection,
   // once dispatch and AbortSignal removal. Keep bookkeeping off the public
   // prototype chain so MessagePort directly extends EventTarget.
   setEventTargetListenerChangeHook(port, (type, change) => {
     if (type === "message") {
-      port[_messageEventListenerCount] += change;
-      port[refMessagePort](port[_messageEventListenerCount] > 0);
+      state.messageEventListenerCount += change;
+      refMessagePort(port, state.messageEventListenerCount > 0);
     }
   });
   return port;
@@ -206,7 +237,6 @@ function nodeWorkerThreadMaybeInvokeCloseCb(port) {
 }
 
 const _isRefed = Symbol("isRefed");
-const _dataPromise = Symbol("dataPromise");
 
 /**
  * Deserialize and dispatch a message on a target EventTarget.
@@ -241,13 +271,6 @@ function dispatchPortMessageData(target, data) {
 }
 
 class MessagePort extends EventTarget {
-  /** @type {boolean} */
-  [_enabled] = false;
-  [_refed] = false;
-  /** @type {Promise<any> | undefined} */
-  [_dataPromise] = undefined;
-  [_messageEventListenerCount] = 0;
-
   constructor() {
     super();
     ObjectDefineProperty(this, MessagePortReceiveMessageOnPortSymbol, {
@@ -372,25 +395,26 @@ class MessagePort extends EventTarget {
 
   start() {
     webidl.assertBranded(this, MessagePortPrototype);
-    if (this[_enabled]) return;
+    const state = getMessagePortState(this);
+    if (state.enabled) return;
     (async () => {
-      this[_enabled] = true;
+      state.enabled = true;
       while (true) {
         const portId = getMessagePortId(this);
         if (portId === null) break;
         let data;
         try {
-          this[_dataPromise] = op_message_port_recv_message(
+          state.dataPromise = op_message_port_recv_message(
             portId,
           );
           if (
             typeof this[nodeWorkerThreadCloseCb] === "function" &&
-            !this[_refed]
+            !state.refed
           ) {
-            core.unrefOpPromise(this[_dataPromise]);
+            core.unrefOpPromise(state.dataPromise);
           }
-          data = await this[_dataPromise];
-          this[_dataPromise] = undefined;
+          data = await state.dataPromise;
+          state.dataPromise = undefined;
         } catch (err) {
           if (ObjectPrototypeIsPrototypeOf(InterruptedPrototype, err)) {
             break;
@@ -402,6 +426,7 @@ class MessagePort extends EventTarget {
           nodeWorkerThreadMaybeInvokeCloseCb(this);
           break;
         }
+        if (privateBrowserBrands && getMessagePortId(this) === null) break;
         if (!dispatchPortMessageData(this, data)) return;
         // Yield long enough for any handler-removed-itself +
         // new-handler-attached cycle (used by `events.once`) to register
@@ -414,50 +439,26 @@ class MessagePort extends EventTarget {
         // queue.
         await new Promise((resolve) => queueMicrotask(() => resolve()));
       }
-      this[_enabled] = false;
+      state.enabled = false;
     })();
-  }
-
-  [refMessagePort](ref) {
-    if (ref) {
-      if (!this[_refed]) {
-        refedMessagePortsCount++;
-        if (
-          this[_dataPromise]
-        ) {
-          core.refOpPromise(this[_dataPromise]);
-        }
-        this[_refed] = true;
-      }
-    } else if (!ref) {
-      if (this[_refed]) {
-        refedMessagePortsCount--;
-        if (
-          this[_dataPromise]
-        ) {
-          core.unrefOpPromise(this[_dataPromise]);
-        }
-        this[_refed] = false;
-      }
-    }
   }
 
   // https://nodejs.org/api/worker_threads.html#portref
   ref() {
     webidl.assertBranded(this, MessagePortPrototype);
-    this[refMessagePort](true);
+    refMessagePort(this, true);
   }
 
   // https://nodejs.org/api/worker_threads.html#portunref
   unref() {
     webidl.assertBranded(this, MessagePortPrototype);
-    this[refMessagePort](false);
+    refMessagePort(this, false);
   }
 
   // https://nodejs.org/api/worker_threads.html#porthasref
   hasRef() {
     webidl.assertBranded(this, MessagePortPrototype);
-    return this[_refed];
+    return getMessagePortState(this).refed;
   }
 
   close(cb) {
@@ -480,20 +481,23 @@ class MessagePort extends EventTarget {
       // (regression test #22762). Without this, messages buffered after
       // the current async recv resolved but before our handler called
       // close() would be silently dropped.
-      try {
-        while (getMessagePortId(this) === portId) {
-          const data = op_message_port_recv_message_sync(portId);
-          if (data === null) break;
-          if (!dispatchPortMessageData(this, data)) break;
+      if (!privateBrowserBrands) {
+        try {
+          while (getMessagePortId(this) === portId) {
+            const data = op_message_port_recv_message_sync(portId);
+            if (data === null) break;
+            if (!dispatchPortMessageData(this, data)) break;
+          }
+        } catch {
+          // recv failed (already canceled / closed); fall through.
         }
-      } catch {
-        // recv failed (already canceled / closed); fall through.
       }
       // The dispatch may have closed the port via a user handler that
       // re-entered close(); only tear down the resource if we still own it.
       if (getMessagePortId(this) === portId) {
         core.close(portId);
         setMessagePortId(this, null);
+        refMessagePort(this, false);
         nodeWorkerThreadMaybeInvokeCloseCb(this);
       }
     }
@@ -509,7 +513,7 @@ class MessagePort extends EventTarget {
       getCreateFilteredInspectProxy()({
         object: {
           active: getMessagePortId(this) !== null,
-          refed: this[_refed],
+          refed: getMessagePortState(this).refed,
           onmessage: this.onmessage,
           onmessageerror: this.onmessageerror,
         },
@@ -543,6 +547,16 @@ defineEventHandler(MessagePort.prototype, "messageerror");
 
 webidl.configureInterface(MessagePort);
 const MessagePortPrototype = MessagePort.prototype;
+
+// Browser embeddings use the actual channel/port records as their brands.
+// Standalone Deno retains its extended interface and branding convention.
+function usePrivateMessagePortBrands() {
+  privateBrowserBrands = true;
+  webidl.registerInterfaceBrand(MessagePortPrototype, value =>
+    WeakMapPrototypeHas(messagePortIds, value));
+  webidl.registerInterfaceBrand(MessageChannelPrototype, value =>
+    WeakSetPrototypeHas(messageChannels, value));
+}
 
 core.registerTransferableResource("MessagePort", (port) => {
   const id = takeMessagePortId(port);
@@ -1164,6 +1178,7 @@ return {
     return refedMessagePortsCount;
   },
   refMessagePort,
+  usePrivateMessagePortBrands,
   serializeJsMessageData,
   serializeMessageData,
   setMessagePortId,
