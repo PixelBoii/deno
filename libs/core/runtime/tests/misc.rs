@@ -78,8 +78,22 @@ fn test_native_console_methods() {
 
 #[test]
 fn test_host_function_api() {
-  let mut runtime = JsRuntime::new(Default::default());
-  runtime.execute_script("host-function.js", r#"
+  for use_native_error_stacks in [false, true] {
+    let mut runtime = JsRuntime::new(crate::RuntimeOptions {
+      use_native_error_stacks,
+      ..Default::default()
+    });
+    runtime
+      .execute_script(
+        "stack-policy.js",
+        if use_native_error_stacks {
+          "const nativeStackPolicy = true;"
+        } else {
+          "const nativeStackPolicy = false;"
+        },
+      )
+      .unwrap();
+    runtime.execute_script("host-function.js", r#"
     const check = (value, message) => { if (!value) throw new Error(message); };
     const create = Deno.core.createHostFunction;
     const sentinel = {};
@@ -96,6 +110,26 @@ fn test_host_function_api() {
     catch (error) { check(error instanceof TypeError, 'construction error'); }
     try { operation('throw'); throw new Error('exception swallowed'); }
     catch (error) { check(error === sentinel, 'exception identity'); }
+    const contextPrefix = "Failed to execute 'contextual' on 'Owned'";
+    const argumentMessage = '1 argument required, but only 0 present.';
+    for (const contextualErrors of [false, true]) {
+      const contextual = create(() => { throw sentinel; }, 'contextual', 1, false,
+        undefined, false, {count: 1, prefix: contextPrefix, contextualErrors});
+      try { contextual(); throw sentinel; }
+      catch (error) {
+        check(error instanceof TypeError, 'binding error remains a native TypeError');
+        check(error.message === contextPrefix + ': ' + argumentMessage, 'public binding context');
+        const descriptor = Object.getOwnPropertyDescriptor(error, 'message');
+        check(descriptor.enumerable === contextualErrors && descriptor.writable && descriptor.configurable, 'opt-in context field attributes');
+        check(error.stack.split('\n')[0] === 'TypeError: ' + (contextualErrors && nativeStackPolicy ? argumentMessage : error.message), 'V8 retains the original binding message');
+      }
+      try { contextual(1); throw new Error('author exception swallowed'); }
+      catch (error) { check(error === sentinel, 'context never changes implementation exceptions'); }
+      const checker = create(() => 0, 'checker', 0, false, () => { throw sentinel; }, false,
+        {count: 0, prefix: contextPrefix, contextualErrors});
+      try { checker(); throw new Error('validator exception swallowed'); }
+      catch (error) { check(error === sentinel, 'context never changes validator exceptions'); }
+    }
     class Implementation { constructor(value) { this.value = value; } }
     const Interface = create((receiver, args, target) => Reflect.construct(Implementation, args, target), 'Interface', 1, true);
     Object.defineProperty(Interface, 'prototype', {value: Implementation.prototype});
@@ -202,12 +236,19 @@ fn test_host_function_api() {
     check(!Deno.core.hasHostInterface(proxy, 'TestInterface'), 'proxy is rejected without traps');
     globalThis.retainedInterface = real;
   "#).unwrap();
-  runtime.v8_isolate().low_memory_notification();
-  runtime.v8_isolate().perform_microtask_checkpoint();
-  runtime.execute_script("host-function-microtasks.js", "if (!receiverRejectionObserved || !labelledReceiverRejectionObserved) throw new Error('receiver rejection was not delivered')").unwrap();
-  runtime.execute_script("host-interface-gc.js", "if (!Deno.core.hasHostInterface(retainedInterface, 'TestInterface')) throw new Error('interface brand was not retained')").unwrap();
-  runtime.execute_script("retained-host-function.js", "if (retainedHostFunction() !== 43) throw new Error('callback was not traced')").unwrap();
+    runtime.v8_isolate().low_memory_notification();
+    runtime.v8_isolate().perform_microtask_checkpoint();
+    runtime.execute_script("host-function-microtasks.js", "if (!receiverRejectionObserved || !labelledReceiverRejectionObserved) throw new Error('receiver rejection was not delivered')").unwrap();
+    runtime.execute_script("host-interface-gc.js", "if (!Deno.core.hasHostInterface(retainedInterface, 'TestInterface')) throw new Error('interface brand was not retained')").unwrap();
+    runtime
+      .execute_script(
+        "retained-host-function.js",
+        "if (retainedHostFunction() !== 43) throw new Error('callback was not traced')",
+      )
+      .unwrap();
+  }
 }
+
 
 #[test]
 fn test_host_function_first_interface_argument() {

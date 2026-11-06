@@ -74,6 +74,8 @@ export namespace core {
    * Set promise for a promise-returning API to reject instead of throwing when
    * receiverCheck returns false. It does not wrap the dispatcher's result.
    * requiredArguments checks arity before dispatch, after receiver validation.
+   * contextualErrors attaches enumerable Web IDL context after native error creation.
+   * It applies only to binding-created errors, preserving validator and callback exceptions.
    * illegalConstructor rejects abstract interfaces before JS dispatch.
    */
   function createHostFunction(
@@ -83,7 +85,13 @@ export namespace core {
     constructable: boolean,
     receiverCheck?: (receiver: unknown) => boolean,
     promise?: boolean,
-    requiredArguments?: {count: number; prefix: string; firstArgumentOverload?: boolean},
+    requiredArguments?: {
+      count: number;
+      prefix: string;
+      firstArgumentOverload?: boolean;
+      requiresNew?: boolean;
+      contextualErrors?: boolean;
+    },
     firstArgumentCheck?: (value: unknown) => boolean,
     firstArgumentInterface?: string,
     illegalConstructor?: boolean,

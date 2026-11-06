@@ -218,6 +218,35 @@ pub fn op_host_interface_data<'s>(
   Some(data)
 }
 
+// Context belongs to a binding-created failure, never an exception thrown by
+// its JavaScript validator or implementation. V8 captures the original message
+// when the error is created; the public Web IDL context is attached afterward.
+struct HostFunctionBindingError {
+  original: String,
+  contextual: String,
+  has_context: bool,
+}
+
+impl HostFunctionBindingError {
+  fn with_context(message: String, prefix: Option<&str>) -> Self {
+    let contextual =
+      prefix.map_or_else(|| message.clone(), |prefix| format!("{prefix}: {message}"));
+    Self {
+      original: message,
+      contextual,
+      has_context: true,
+    }
+  }
+
+  fn plain(message: &str) -> Self {
+    Self {
+      original: message.into(),
+      contextual: message.into(),
+      has_context: false,
+    }
+  }
+}
+
 // API functions retain a JS implementation in their callback data. V8 owns that
 // reference, so closures (including ones in another realm) are traced normally.
 fn host_function_callback(
@@ -229,12 +258,14 @@ fn host_function_callback(
   let callback = data.get_index(scope, 0).unwrap();
   let callback = v8::Local::<v8::Function>::try_from(callback).unwrap();
   let mut failure = if data.get_index(scope, 7).unwrap().is_true() {
-    let prefix = data.get_index(scope, 4).unwrap().to_rust_string_lossy(scope);
-    Some(if prefix.is_empty() || args.new_target().is_undefined() {
-      "Illegal constructor".to_string()
-    } else {
-      format!("{prefix}: Illegal constructor")
-    })
+    let prefix = data
+      .get_index(scope, 4)
+      .unwrap()
+      .to_rust_string_lossy(scope);
+    Some(HostFunctionBindingError::with_context(
+      "Illegal constructor".into(),
+      (!prefix.is_empty() && !args.new_target().is_undefined()).then_some(prefix.as_str()),
+    ))
   } else {
     None
   };
@@ -242,8 +273,15 @@ fn host_function_callback(
     && args.new_target().is_undefined()
     && data.get_index(scope, 10).unwrap().is_true()
   {
-    let prefix = data.get_index(scope, 4).unwrap().to_rust_string_lossy(scope);
-    failure = Some(format!("{prefix}: Please use the 'new' operator, this DOM object constructor cannot be called as a function."));
+    let prefix = data
+      .get_index(scope, 4)
+      .unwrap()
+      .to_rust_string_lossy(scope);
+    failure = Some(HostFunctionBindingError::with_context(
+      "Please use the 'new' operator, this DOM object constructor cannot be called as a function."
+        .into(),
+      Some(&prefix),
+    ));
   }
   if failure.is_none() && args.new_target().is_undefined() {
     let checker = data.get_index(scope, 1).unwrap();
@@ -254,21 +292,37 @@ fn host_function_callback(
       };
       if !valid.boolean_value(scope) {
         let promise = data.get_index(scope, 2).unwrap().is_true();
-        let prefix = data.get_index(scope, 4).unwrap().to_rust_string_lossy(scope);
+        let prefix = data
+          .get_index(scope, 4)
+          .unwrap()
+          .to_rust_string_lossy(scope);
         failure = Some(if promise && !prefix.is_empty() {
-          format!("{prefix}: Illegal invocation")
+          HostFunctionBindingError::with_context("Illegal invocation".into(), Some(&prefix))
         } else {
-          "Illegal invocation".to_string()
+          HostFunctionBindingError::plain("Illegal invocation")
         });
       }
     }
   }
   if failure.is_none() {
-    let count = data.get_index(scope, 3).unwrap().uint32_value(scope).unwrap();
+    let count = data
+      .get_index(scope, 3)
+      .unwrap()
+      .uint32_value(scope)
+      .unwrap();
     if (args.length() as u32) < count {
-      let prefix = data.get_index(scope, 4).unwrap().to_rust_string_lossy(scope);
+      let prefix = data
+        .get_index(scope, 4)
+        .unwrap()
+        .to_rust_string_lossy(scope);
       let plural = if count == 1 { "" } else { "s" };
-      failure = Some(format!("{prefix}: {count} argument{plural} required, but only {} present.", args.length()));
+      failure = Some(HostFunctionBindingError::with_context(
+        format!(
+          "{count} argument{plural} required, but only {} present.",
+          args.length()
+        ),
+        Some(&prefix),
+      ));
     }
   }
   // An interface conversion for the first argument precedes every later
@@ -282,21 +336,42 @@ fn host_function_callback(
         return;
       };
       if !valid.boolean_value(scope) {
-        let prefix = data.get_index(scope, 4).unwrap().to_rust_string_lossy(scope);
-        let interface = data.get_index(scope, 6).unwrap().to_rust_string_lossy(scope);
-        failure = Some(if data.get_index(scope, 8).unwrap().is_true() {
-          format!("{prefix}: Overload resolution failed.")
-        } else {
-          format!("{prefix}: parameter 1 is not of type '{interface}'.")
-        });
+        let prefix = data
+          .get_index(scope, 4)
+          .unwrap()
+          .to_rust_string_lossy(scope);
+        let interface = data
+          .get_index(scope, 6)
+          .unwrap()
+          .to_rust_string_lossy(scope);
+        failure = Some(HostFunctionBindingError::with_context(
+          if data.get_index(scope, 8).unwrap().is_true() {
+            "Overload resolution failed.".into()
+          } else {
+            format!("parameter 1 is not of type '{interface}'.")
+          },
+          Some(&prefix),
+        ));
       }
     }
   }
-  if let Some(message) = failure {
-    // Binding errors are created before JS dispatch. Application exceptions
-    // from the validator and dispatcher still propagate unchanged.
-    let message = v8::String::new(scope, &message).unwrap();
+  if let Some(failure) = failure {
+    let contextual = data.get_index(scope, 11).unwrap().is_true() && failure.has_context;
+    let original = if contextual {
+      &failure.original
+    } else {
+      &failure.contextual
+    };
+    let message = v8::String::new(scope, original).unwrap();
     let exception = v8::Exception::type_error(scope, message);
+    if contextual {
+      let object = exception.try_cast::<v8::Object>().unwrap();
+      let key = v8::String::new(scope, "message").unwrap();
+      let message = v8::String::new(scope, &failure.contextual).unwrap();
+      // CreateDataProperty is deliberate: browser diagnostic context is an
+      // enumerable public field. No stack property is read or changed.
+      object.create_data_property(scope, key.into(), message.into());
+    }
     let promise = data.get_index(scope, 2).unwrap();
     if promise.is_true() && args.new_target().is_undefined() {
       let resolver = v8::PromiseResolver::new(scope).unwrap();
@@ -317,11 +392,7 @@ fn host_function_callback(
     // before dispatch, and pass the actual object to the backend unchanged.
     dispatch_args.push(v8::Exception::type_error(scope, message));
   }
-  if let Some(result) = callback.call(
-    scope,
-    receiver,
-    &dispatch_args,
-  ) {
+  if let Some(result) = callback.call(scope, receiver, &dispatch_args) {
     rv.set(result);
   }
   // A pending exception is propagated to the caller unchanged.
@@ -332,10 +403,12 @@ fn host_function_callback(
 pub struct HostFunctionRequiredArguments {
   count: u32,
   prefix: String,
-    #[serde(default)]
-    first_argument_overload: bool,
+  #[serde(default)]
+  first_argument_overload: bool,
   #[serde(default)]
   requires_new: bool,
+  #[serde(default)]
+  contextual_errors: bool,
 }
 
 // Keep the inspector invocation on a native frame. A JavaScript dispatcher or
@@ -401,24 +474,51 @@ pub fn op_create_host_function<'s>(
       "Host functions must be created after restoring a snapshot",
     ));
   }
-  let checker = receiver_check.map(v8::Local::<v8::Value>::from)
+  let checker = receiver_check
+    .map(v8::Local::<v8::Value>::from)
     .unwrap_or_else(|| v8::undefined(scope).into());
   let promise = v8::Boolean::new(scope, promise);
   let required_arguments = required_arguments.unwrap_or(HostFunctionRequiredArguments {
-    count: 0, prefix: String::new(), first_argument_overload: false, requires_new: false,
+    count: 0,
+    prefix: String::new(),
+    first_argument_overload: false,
+    requires_new: false,
+    contextual_errors: false,
   });
   let count = v8::Integer::new_from_unsigned(scope, required_arguments.count);
   let prefix = v8::String::new(scope, &required_arguments.prefix).unwrap();
-  let argument_checker = first_argument_check.map(v8::Local::<v8::Value>::from)
+  let argument_checker = first_argument_check
+    .map(v8::Local::<v8::Value>::from)
     .unwrap_or_else(|| v8::undefined(scope).into());
-  let interface = v8::String::new(scope, first_argument_interface.as_deref().unwrap_or("Object")).unwrap();
+  let interface = v8::String::new(
+    scope,
+    first_argument_interface.as_deref().unwrap_or("Object"),
+  )
+  .unwrap();
   let illegal_constructor = v8::Boolean::new(scope, illegal_constructor);
   let overload = v8::Boolean::new(scope, required_arguments.first_argument_overload);
   let requires_new = v8::Boolean::new(scope, required_arguments.requires_new);
+  let contextual_errors = v8::Boolean::new(scope, required_arguments.contextual_errors);
   let entry_error_message = entry_error_message
     .map(|message| v8::String::new(scope, &message).unwrap().into())
     .unwrap_or_else(|| v8::undefined(scope).into());
-  let data = v8::Array::new_with_elements(scope, &[callback.into(), checker, promise.into(), count.into(), prefix.into(), argument_checker, interface.into(), illegal_constructor.into(), overload.into(), entry_error_message, requires_new.into()]);
+  let data = v8::Array::new_with_elements(
+    scope,
+    &[
+      callback.into(),
+      checker,
+      promise.into(),
+      count.into(),
+      prefix.into(),
+      argument_checker,
+      interface.into(),
+      illegal_constructor.into(),
+      overload.into(),
+      entry_error_message,
+      requires_new.into(),
+      contextual_errors.into(),
+    ],
+  );
   let function = v8::Function::builder(host_function_callback)
     .data(data.into())
     .length(length)
