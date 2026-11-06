@@ -230,7 +230,7 @@ fn host_function_callback(
   let callback = v8::Local::<v8::Function>::try_from(callback).unwrap();
   let mut failure = if data.get_index(scope, 7).unwrap().is_true() {
     let prefix = data.get_index(scope, 4).unwrap().to_rust_string_lossy(scope);
-    Some(if prefix.is_empty() {
+    Some(if prefix.is_empty() || args.new_target().is_undefined() {
       "Illegal constructor".to_string()
     } else {
       format!("{prefix}: Illegal constructor")
@@ -238,6 +238,13 @@ fn host_function_callback(
   } else {
     None
   };
+  if failure.is_none()
+    && args.new_target().is_undefined()
+    && data.get_index(scope, 10).unwrap().is_true()
+  {
+    let prefix = data.get_index(scope, 4).unwrap().to_rust_string_lossy(scope);
+    failure = Some(format!("{prefix}: Please use the 'new' operator, this DOM object constructor cannot be called as a function."));
+  }
   if failure.is_none() && args.new_target().is_undefined() {
     let checker = data.get_index(scope, 1).unwrap();
     if let Ok(checker) = v8::Local::<v8::Function>::try_from(checker) {
@@ -327,6 +334,8 @@ pub struct HostFunctionRequiredArguments {
   prefix: String,
     #[serde(default)]
     first_argument_overload: bool,
+  #[serde(default)]
+  requires_new: bool,
 }
 
 // Keep the inspector invocation on a native frame. A JavaScript dispatcher or
@@ -396,7 +405,7 @@ pub fn op_create_host_function<'s>(
     .unwrap_or_else(|| v8::undefined(scope).into());
   let promise = v8::Boolean::new(scope, promise);
   let required_arguments = required_arguments.unwrap_or(HostFunctionRequiredArguments {
-    count: 0, prefix: String::new(), first_argument_overload: false,
+    count: 0, prefix: String::new(), first_argument_overload: false, requires_new: false,
   });
   let count = v8::Integer::new_from_unsigned(scope, required_arguments.count);
   let prefix = v8::String::new(scope, &required_arguments.prefix).unwrap();
@@ -405,10 +414,11 @@ pub fn op_create_host_function<'s>(
   let interface = v8::String::new(scope, first_argument_interface.as_deref().unwrap_or("Object")).unwrap();
   let illegal_constructor = v8::Boolean::new(scope, illegal_constructor);
   let overload = v8::Boolean::new(scope, required_arguments.first_argument_overload);
+  let requires_new = v8::Boolean::new(scope, required_arguments.requires_new);
   let entry_error_message = entry_error_message
     .map(|message| v8::String::new(scope, &message).unwrap().into())
     .unwrap_or_else(|| v8::undefined(scope).into());
-  let data = v8::Array::new_with_elements(scope, &[callback.into(), checker, promise.into(), count.into(), prefix.into(), argument_checker, interface.into(), illegal_constructor.into(), overload.into(), entry_error_message]);
+  let data = v8::Array::new_with_elements(scope, &[callback.into(), checker, promise.into(), count.into(), prefix.into(), argument_checker, interface.into(), illegal_constructor.into(), overload.into(), entry_error_message, requires_new.into()]);
   let function = v8::Function::builder(host_function_callback)
     .data(data.into())
     .length(length)

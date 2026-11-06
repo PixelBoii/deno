@@ -102,6 +102,27 @@ fn test_host_function_api() {
     class Subclass extends Interface {}
     const instance = new Subclass(42);
     check(instance instanceof Subclass && instance instanceof Implementation && instance.value === 42, 'new.target');
+    let constructorDispatches=0;
+    const RequiredInterface=create((receiver,args,target)=>{
+      constructorDispatches++;
+      return Reflect.construct(Implementation,args,target);
+    },'RequiredInterface',1,true,undefined,false,
+      {count:1,prefix:"Failed to construct 'RequiredInterface'",requiresNew:true});
+    for(const args of [[],[{toString(){throw sentinel;}}]]) {
+      try{Reflect.apply(RequiredInterface,undefined,args);throw sentinel;}
+      catch(error){
+        check(error instanceof TypeError&&error.message.includes("Please use the 'new' operator"),'new.target precedes arity and conversion');
+        check(!error.stack.includes('ops_builtin'),'constructor fails at native entry');
+      }
+    }
+    try{new RequiredInterface();throw sentinel;}
+    catch(error){check(error instanceof TypeError&&error.message.includes('1 argument required'),'construction validates required arguments');}
+    check(constructorDispatches===0,'invalid construction never dispatches');
+    class RequiredSubclass extends RequiredInterface {}
+    const requiredInstance=new RequiredSubclass(47);
+    check(constructorDispatches===1&&requiredInstance.value===47&&requiredInstance instanceof RequiredSubclass,'real construction preserves new.target');
+    const dualCall=create((receiver,args,target)=>target?{constructed:true}:48,'dualCall',0,true);
+    check(dualCall()===48&&new dualCall().constructed,'generic host functions can still support both calls');
     globalThis.retainedHostFunction = (() => {
       const data = {answer: 43};
       return create(() => data.answer, 'retained', 0, false);
