@@ -47,6 +47,16 @@ async fn platform_inspection_preserves_cli_hooks_and_private_callbacks() {
       const result = consoleInspection.inspect(object);
       assert(native ? result.includes('ordinary: 42') : result === 'custom inspector');
       assert(calls === (native ? 0 : 1) && Object.hasOwn(object, key));
+      for (const inherited of [false, true]) {{
+        let tagReads = 0;
+        const tagged = {{get [Symbol.toStringTag]() {{tagReads++; return 'AuthorTag';}}}};
+        const value = inherited ? Object.create(tagged) : tagged;
+        consoleInspection.inspect(value);
+        assert(tagReads === (native ? 0 : 1));
+        assert(value[Symbol.toStringTag] === 'AuthorTag');
+        assert(tagReads === (native ? 1 : 2));
+      }}
+      assert(consoleInspection.inspect({{[Symbol.toStringTag]:'StoredTag'}}).includes('StoredTag'));
       const prototype = {{}};
       let privateCalls = 0;
       registerInspector(prototype, function() {{privateCalls++; return 'Platform actual=' + this.actual;}});

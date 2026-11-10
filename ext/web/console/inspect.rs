@@ -501,6 +501,35 @@ pub fn try_get_str<'s, 'i>(
   try_get(scope, obj, key.into())
 }
 
+// The inspector has already observed the console argument. A browser's extra
+// terminal preview must not execute its tag accessor again. CLI inspection
+// keeps ordinary property access; browser previews use existing data slots.
+fn inspection_tag<'s>(
+  scope: &mut v8::PinScope<'s, '_>,
+  mut object: v8::Local<'s, v8::Object>,
+) -> Option<v8::Local<'s, v8::Value>> {
+  let tag = v8::Symbol::get_to_string_tag(scope);
+  if !super::private_inspection_enabled(scope) {
+    return try_get(scope, object, tag.into());
+  }
+  let value_key = v8_static_key(scope, "value");
+  v8::tc_scope!(tc, scope);
+  loop {
+    if object.is_proxy() {
+      return None;
+    }
+    let descriptor = object.get_own_property_descriptor(tc, tag.into())?;
+    if let Ok(descriptor) = v8::Local::<v8::Object>::try_from(descriptor) {
+      return if descriptor.has_own_property(tc, value_key.into())? {
+        descriptor.get(tc, value_key.into())
+      } else {
+        None
+      };
+    }
+    object = v8::Local::<v8::Object>::try_from(object.get_prototype(tc)?).ok()?;
+  }
+}
+
 /// `ObjectPrototypeIsPrototypeOf(proto, value)` -- walk the prototype chain.
 pub fn is_prototype_of<'s>(
   scope: &mut v8::PinScope<'s, '_>,
@@ -1983,8 +2012,7 @@ fn format_raw<'s, 'i>(
 
   let mut tag = String::new();
   if proxy_details.is_none() {
-    let tag_symbol = v8::Symbol::get_to_string_tag(scope);
-    let tag_value = try_get(scope, value_obj, tag_symbol.into());
+    let tag_value = inspection_tag(scope, value_obj);
     if let Some(tag_value) = tag_value {
       if tag_value.is_string() {
         tag = tag_value.to_rust_string_lossy(scope);
