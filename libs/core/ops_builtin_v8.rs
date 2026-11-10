@@ -742,6 +742,7 @@ impl v8::ValueSerializerImpl for SerializeDeserialize<'_> {
   ) -> Option<bool> {
     let key = unserializable_host_object_key(scope);
     if object.has_private(scope, key)? {
+      // Route nested instances through write_host_object as well.
       return Some(true);
     }
     match self.host_object_brand {
@@ -757,6 +758,7 @@ impl v8::ValueSerializerImpl for SerializeDeserialize<'_> {
     object: v8::Local<'s, v8::Object>,
     value_serializer: &dyn v8::ValueSerializerHelper,
   ) -> Option<bool> {
+    // Reject marked instances before public hook getters can run JavaScript.
     let key = unserializable_host_object_key(scope);
     if object.has_private(scope, key)? {
       let message = v8::String::new(scope, "Unsupported object type").unwrap();
