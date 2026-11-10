@@ -2192,3 +2192,45 @@ fn foreground_tasks_delivered_without_tokio_handle() {
     runtime.resolve_value(promise).await.unwrap();
   });
 }
+
+#[test]
+fn test_private_unserializable_host_object() {
+  let mut runtime = JsRuntime::new(RuntimeOptions::default());
+  let object = runtime
+    .execute_script("host-object", "globalThis.hostObject = {value: 23}")
+    .unwrap();
+  {
+    deno_core::scope!(scope, runtime);
+    let object = v8::Local::new(scope, object).try_into().unwrap();
+    crate::mark_as_unserializable_host_object(scope, object);
+  }
+  runtime.execute_script("host-serialization", r#"
+    function assert(value) { if (!value) throw Error('private host marker'); }
+    function rejected(value) {
+      try { Deno.core.serialize(value); return false; } catch { return true; }
+    }
+    assert(Reflect.ownKeys(hostObject).join() === 'value');
+    assert(rejected(hostObject) && rejected({nested: hostObject}));
+    for (const value of [hostObject, {nested: hostObject}]) {
+      let error;
+      try { Deno.core.structuredClone(value); } catch (caught) { error = caught; }
+      assert(error instanceof TypeError);
+    }
+    const copied = Object.create(Object.getPrototypeOf(hostObject));
+    for (const key of Reflect.ownKeys(hostObject)) {
+      Object.defineProperty(copied, key, Object.getOwnPropertyDescriptor(hostObject, key));
+    }
+    assert(Deno.core.deserialize(Deno.core.serialize(copied)).value === 23);
+    const brand = Symbol.for('Deno.core.hostObject');
+    const legacy = {[brand]() { return {value: 9}; }};
+    assert(Deno.core.serialize(legacy) instanceof Uint8Array);
+    let hookCalls = 0;
+    hostObject[brand] = () => { hookCalls++; return {value: 9}; };
+    assert(rejected(hostObject) && hookCalls === 0);
+    delete hostObject[brand];
+    Object.setPrototypeOf(hostObject, null);
+    assert(rejected(hostObject) && rejected({nested: hostObject}));
+    Object.freeze(hostObject);
+    assert(rejected(hostObject));
+  "#).unwrap();
+}
