@@ -421,6 +421,10 @@ pub struct JsRuntimeInspector {
   state: Rc<JsRuntimeInspectorState>,
 }
 
+/// Receives the text and severity already produced by V8's console delegate.
+/// Forwarding this text avoids coercing the original console arguments again.
+pub type ConsoleMessageCallback = Rc<dyn Fn(i32, &str)>;
+
 impl Drop for JsRuntimeInspector {
   fn drop(&mut self) {
     // Since the waker is cloneable, it might outlive the inspector itself.
@@ -466,11 +470,28 @@ struct JsRuntimeInspectorState {
   /// when handling `Network.getResponseBody`/`getRequestPostData`/
   /// `streamResourceContent`.
   network_data: Rc<RefCell<NetworkDataBuffer>>,
+  console_message_callback: RefCell<Option<ConsoleMessageCallback>>,
 }
 
 struct JsRuntimeInspectorClient(Rc<JsRuntimeInspectorState>);
 
 impl v8::inspector::V8InspectorClientImpl for JsRuntimeInspectorClient {
+  fn console_api_message(
+    &self,
+    _context_group_id: i32,
+    level: i32,
+    message: &v8::inspector::StringView,
+    _url: &v8::inspector::StringView,
+    _line_number: u32,
+    _column_number: u32,
+    _stack_trace: &mut v8::inspector::V8StackTrace,
+  ) {
+    let callback = self.0.console_message_callback.borrow().clone();
+    if let Some(callback) = callback {
+      callback(level, &message.to_string());
+    }
+  }
+
   fn run_message_loop_on_pause(&self, context_group_id: i32) {
     assert_eq!(context_group_id, JsRuntimeInspector::CONTEXT_GROUP_ID);
     self.0.flags.borrow_mut().on_pause = true;
@@ -870,6 +891,16 @@ impl JsRuntimeInspectorState {
 }
 
 impl JsRuntimeInspector {
+  /// Forward native console messages without enabling a protocol domain or
+  /// inspecting their argument objects. Existing inspector sessions still
+  /// receive the original arguments normally.
+  pub fn set_console_message_callback(
+    &self,
+    callback: Option<ConsoleMessageCallback>,
+  ) {
+    *self.state.console_message_callback.borrow_mut() = callback;
+  }
+
   /// Currently Deno supports only a single context in `JsRuntime`
   /// and thus it's id is provided as an associated constant.
   const CONTEXT_GROUP_ID: i32 = 1;
@@ -903,6 +934,7 @@ impl JsRuntimeInspector {
       auto_attach_wait_for_debugger_on_start: Rc::new(Cell::new(false)),
       discover_targets_enabled: Rc::new(Cell::new(false)),
       network_data: Rc::new(RefCell::new(NetworkDataBuffer::default())),
+      console_message_callback: RefCell::new(None),
     });
     let client = Box::new(JsRuntimeInspectorClient(state.clone()));
     let v8_inspector_client = v8::inspector::V8InspectorClient::new(client);
