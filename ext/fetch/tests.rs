@@ -46,6 +46,304 @@ static BR_HELLO_FROM_SERVER: &[u8] = &[
   0x56,
 ];
 
+struct RecordingTransport {
+  requests: Arc<std::sync::Mutex<Vec<http::Request<Bytes>>>>,
+  encoding: &'static str,
+  body: &'static [u8],
+}
+
+impl crate::HttpTransport for RecordingTransport {
+  fn send(
+    &self,
+    request: http::Request<crate::ReqBody>,
+  ) -> crate::HttpTransportFuture {
+    let requests = self.requests.clone();
+    let encoding = self.encoding;
+    let body = self.body;
+    Box::pin(async move {
+      let (parts, request_body) = request.into_parts();
+      let request_body = request_body.collect().await?.to_bytes();
+      requests
+        .lock()
+        .unwrap()
+        .push(http::Request::from_parts(parts, request_body));
+      Ok(
+        http::Response::builder()
+          .header(CONTENT_ENCODING, encoding)
+          .header(CONTENT_LENGTH, body.len())
+          .body(
+            http_body_util::Full::new(Bytes::from_static(body))
+              .map_err(|never| match never {})
+              .boxed(),
+          )
+          .unwrap(),
+      )
+    })
+  }
+}
+
+#[tokio::test]
+async fn test_embedder_transport_preserves_requests_and_fetch_decoding() {
+  for (encoding, body) in [
+    ("gzip", GZIP_HELLO_FROM_SERVER),
+    ("br", BR_HELLO_FROM_SERVER),
+  ] {
+    let requests = Arc::new(std::sync::Mutex::new(vec![]));
+    let transport = RecordingTransport {
+      requests: requests.clone(),
+      encoding,
+      body,
+    };
+    let request = http::Request::builder()
+      .method("POST")
+      .uri("https://example.test/upload")
+      .header("x-test", "preserved")
+      .body(crate::ReqBody::full(Bytes::from_static(b"upload")))
+      .unwrap();
+    let response = crate::send_http_request(
+      create_http_test_client(),
+      request,
+      Some(Arc::new(transport)),
+    )
+    .await
+    .unwrap();
+    assert!(response.extensions().get::<crate::BodyDecoded>().is_some());
+    assert_eq!(response.headers()[CONTENT_ENCODING], encoding);
+    assert_eq!(response.headers()[CONTENT_LENGTH], body.len().to_string());
+    assert_eq!(
+      response.collect().await.unwrap().to_bytes(),
+      "hello from server"
+    );
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests[0].method(), "POST");
+    assert_eq!(requests[0].uri(), "https://example.test/upload");
+    assert_eq!(requests[0].headers()["user-agent"], "fetch/test");
+    assert_eq!(requests[0].headers()["accept"], "*/*");
+    assert_eq!(requests[0].headers()[ACCEPT_ENCODING], "gzip,br");
+    assert_eq!(requests[0].headers()["x-test"], "preserved");
+    assert_eq!(requests[0].body(), b"upload".as_slice());
+  }
+}
+
+#[tokio::test]
+async fn test_embedder_transport_preserves_range_and_identity_bodies() {
+  for (range, encoding) in
+    [(false, "identity"), (true, "identity"), (true, "gzip")]
+  {
+    let requests = Arc::new(std::sync::Mutex::new(vec![]));
+    let transport = RecordingTransport {
+      requests: requests.clone(),
+      encoding: "gzip",
+      body: GZIP_HELLO_FROM_SERVER,
+    };
+    let mut request = http::Request::builder()
+      .uri("https://example.test/")
+      .header(ACCEPT_ENCODING, encoding)
+      .body(crate::ReqBody::empty())
+      .unwrap();
+    if range {
+      request
+        .headers_mut()
+        .insert(RANGE, HeaderValue::from_static("bytes=0-9"));
+    }
+    let response = crate::send_http_request(
+      create_http_test_client(),
+      request,
+      Some(Arc::new(transport)),
+    )
+    .await
+    .unwrap();
+    assert!(response.extensions().get::<crate::BodyDecoded>().is_none());
+    assert_eq!(
+      response.collect().await.unwrap().to_bytes(),
+      GZIP_HELLO_FROM_SERVER
+    );
+    assert_eq!(
+      requests.lock().unwrap()[0].headers()[ACCEPT_ENCODING],
+      encoding
+    );
+  }
+}
+
+fn transport_test_runtime(
+  transport: Arc<dyn crate::HttpTransport>,
+) -> deno_core::JsRuntime {
+  let runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+    extensions: vec![deno_core::Extension {
+      name: "transport_test",
+      ops: vec![crate::op_fetch(), crate::op_fetch_send()].into(),
+      ..Default::default()
+    }],
+    ..Default::default()
+  });
+  let state = runtime.op_state();
+  let mut state = state.borrow_mut();
+  state.put(create_http_test_client());
+  state.put(PermissionsContainer::allow_all(Arc::new(
+    RuntimePermissionDescriptorParser::new(sys_traits::impls::RealSys),
+  )));
+  state.put(crate::Options {
+    http_transport: Some(transport),
+    ..Default::default()
+  });
+  runtime
+}
+
+fn transport_test_request(
+  runtime: &mut deno_core::JsRuntime,
+  url: &str,
+  client: Option<u32>,
+) -> (u32, Option<u32>) {
+  let value = runtime.execute_script("transport request", format!(
+    "JSON.stringify(Deno.core.ops.op_fetch('GET', {}, [], {}, false, null, null))",
+    serde_json::to_string(url).unwrap(), client.map(|v| v.to_string()).unwrap_or("null".into()),
+  )).unwrap();
+  deno_core::scope!(scope, runtime);
+  let json =
+    deno_core::v8::Local::new(scope, value).to_rust_string_lossy(scope);
+  let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+  (
+    value["requestRid"].as_u64().unwrap() as u32,
+    value["cancelHandleRid"].as_u64().map(|v| v as u32),
+  )
+}
+
+fn transport_test_future(
+  runtime: &mut deno_core::JsRuntime,
+  rid: u32,
+) -> crate::CancelableResponseFuture {
+  let request = runtime
+    .op_state()
+    .borrow_mut()
+    .resource_table
+    .take::<crate::FetchRequestResource>(rid)
+    .unwrap();
+  std::rc::Rc::try_unwrap(request).ok().unwrap().future
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_embedder_transport_default_client_only() {
+  let requests = Arc::new(std::sync::Mutex::new(vec![]));
+  let mut runtime = transport_test_runtime(Arc::new(RecordingTransport {
+    requests: requests.clone(),
+    encoding: "gzip",
+    body: GZIP_HELLO_FROM_SERVER,
+  }));
+  let (rid, _) =
+    transport_test_request(&mut runtime, "https://example.test/", None);
+  let response = transport_test_future(&mut runtime, rid)
+    .await
+    .unwrap()
+    .unwrap();
+  assert_eq!(
+    response.collect().await.unwrap().to_bytes(),
+    "hello from server"
+  );
+  assert_eq!(requests.lock().unwrap().len(), 1);
+
+  let address = create_encoded_http_server(
+    Arc::default(),
+    HeaderValue::from_static("gzip"),
+    GZIP_HELLO_FROM_SERVER,
+  )
+  .await;
+  let client = runtime.op_state().borrow_mut().resource_table.add(
+    crate::HttpClientResource::new(create_http_test_client(), false),
+  );
+  let (rid, _) = transport_test_request(
+    &mut runtime,
+    &format!("http://{address}/"),
+    Some(client),
+  );
+  let response = transport_test_future(&mut runtime, rid)
+    .await
+    .unwrap()
+    .unwrap();
+  assert_eq!(
+    response.collect().await.unwrap().to_bytes(),
+    "hello from server"
+  );
+  let (rid, _) =
+    transport_test_request(&mut runtime, "data:text/plain,local", None);
+  let response = transport_test_future(&mut runtime, rid)
+    .await
+    .unwrap()
+    .unwrap();
+  assert_eq!(response.collect().await.unwrap().to_bytes(), "local");
+  assert_eq!(requests.lock().unwrap().len(), 1);
+}
+
+struct PendingTransport(Arc<std::sync::atomic::AtomicBool>);
+impl crate::HttpTransport for PendingTransport {
+  fn send(
+    &self,
+    _: http::Request<crate::ReqBody>,
+  ) -> crate::HttpTransportFuture {
+    struct Dropped(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for Dropped {
+      fn drop(&mut self) {
+        self.0.store(true, SeqCst);
+      }
+    }
+    let guard = Dropped(self.0.clone());
+    Box::pin(async move {
+      let _guard = guard;
+      std::future::pending().await
+    })
+  }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_embedder_transport_is_cancelled_with_request() {
+  let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+  let mut runtime =
+    transport_test_runtime(Arc::new(PendingTransport(dropped.clone())));
+  let (rid, cancel) =
+    transport_test_request(&mut runtime, "https://example.test/", None);
+  let mut future = transport_test_future(&mut runtime, rid);
+  assert!(deno_core::futures::poll!(&mut future).is_pending());
+  let cancel_handle = runtime
+    .op_state()
+    .borrow_mut()
+    .resource_table
+    .take_any(cancel.unwrap())
+    .unwrap();
+  cancel_handle.close();
+  assert!(future.await.is_err());
+  assert!(dropped.load(SeqCst));
+}
+
+struct FailingTransport;
+impl crate::HttpTransport for FailingTransport {
+  fn send(
+    &self,
+    _: http::Request<crate::ReqBody>,
+  ) -> crate::HttpTransportFuture {
+    Box::pin(async {
+      Err(deno_error::JsErrorBox::type_error("transport unavailable"))
+    })
+  }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_embedder_transport_errors_use_fetch_error_response() {
+  let mut runtime = transport_test_runtime(Arc::new(FailingTransport));
+  let (rid, _) =
+    transport_test_request(&mut runtime, "https://example.test/", None);
+  runtime.execute_script("send transport request", format!(
+    "Deno.core.ops.op_fetch_send({rid}).then(response => globalThis.transportResult = response.error)"
+  )).unwrap();
+  runtime.run_event_loop(Default::default()).await.unwrap();
+  let result = runtime
+    .execute_script("fetch error", "transportResult[1]")
+    .unwrap();
+  deno_core::scope!(scope, runtime);
+  assert_eq!(
+    deno_core::v8::Local::new(scope, result).to_rust_string_lossy(scope),
+    "transport unavailable"
+  );
+}
+
 static EXAMPLE_CRT: &[u8] = include_bytes!("../tls/testdata/example1_cert.der");
 static EXAMPLE_KEY: &[u8] =
   include_bytes!("../tls/testdata/example1_prikey.der");

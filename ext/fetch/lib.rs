@@ -112,6 +112,9 @@ pub struct Options {
   pub user_agent: String,
   pub root_cert_store_provider: Option<Arc<dyn RootCertStoreProvider>>,
   pub proxy: Option<Proxy>,
+  /// Sends default-client HTTP requests through an embedder's transport.
+  /// Explicit `Deno.createHttpClient()` clients keep their own configuration.
+  pub http_transport: Option<Arc<dyn HttpTransport>>,
   /// A callback to customize HTTP client configuration.
   ///
   /// The settings applied with this hook may be overridden by the options
@@ -146,6 +149,7 @@ impl Default for Options {
       user_agent: "".to_string(),
       root_cert_store_provider: None,
       proxy: None,
+      http_transport: None,
       client_builder_hook: None,
       request_builder_hook: None,
       unsafely_ignore_certificate_errors: None,
@@ -250,6 +254,9 @@ pub enum FetchError {
   RequestBuilderHook(JsErrorBox),
   #[class(inherit)]
   #[error(transparent)]
+  HttpTransport(JsErrorBox),
+  #[class(inherit)]
+  #[error(transparent)]
   Io(#[from] std::io::Error),
   #[class(generic)]
   #[error(transparent)]
@@ -280,6 +287,40 @@ impl From<deno_fs::FsError> for FetchError {
 
 pub type CancelableResponseFuture =
   Pin<Box<dyn Future<Output = CancelableResponseResult>>>;
+
+pub type HttpTransportFuture = Pin<
+  Box<dyn Future<Output = Result<http::Response<ResBody>, JsErrorBox>> + Send>,
+>;
+
+/// Performs one HTTP exchange without following redirects or decoding the body.
+/// Fetch retains permission checks, cancellation, redirects and content decoding.
+/// The transport owns connection configuration, including TLS and proxy routing.
+///
+/// Resource-backed request bodies must be polled on the calling runtime. A
+/// transport using another runtime must relay their frames rather than moving
+/// the resource reader there.
+pub trait HttpTransport: Send + Sync {
+  fn send(&self, request: http::Request<ReqBody>) -> HttpTransportFuture;
+}
+
+async fn send_http_request(
+  client: Client,
+  mut request: http::Request<ReqBody>,
+  transport: Option<Arc<dyn HttpTransport>>,
+) -> Result<http::Response<ResBody>, FetchError> {
+  if let Some(transport) = transport {
+    client.inject_common_headers(&mut request);
+    request.headers_mut().entry(ACCEPT).or_insert(STAR_STAR);
+    let skip = prepare_decompression_request(&mut request);
+    let response = transport
+      .send(request)
+      .await
+      .map_err(FetchError::HttpTransport)?;
+    Ok(decompress_response(response, skip))
+  } else {
+    client.send(request).await.map_err(FetchError::from)
+  }
+}
 
 pub trait FetchHandler {
   // Return the result of the fetch request consisting of a tuple of the
@@ -538,6 +579,10 @@ pub fn op_fetch(
       }
 
       let options = state.borrow::<Options>();
+      let http_transport = client_rid
+        .is_none()
+        .then(|| options.http_transport.clone())
+        .flatten();
       if let Some(request_builder_hook) = options.request_builder_hook {
         request_builder_hook(&mut request)
           .map_err(FetchError::RequestBuilderHook)?;
@@ -547,9 +592,7 @@ pub fn op_fetch(
       let cancel_handle_ = cancel_handle.clone();
 
       let fut = async move {
-        client
-          .send(request)
-          .map_err(Into::into)
+        send_http_request(client, request, http_transport)
           .or_cancel(cancel_handle_)
           .await
       };
@@ -640,18 +683,17 @@ pub async fn op_fetch_send(
     Ok(Err(err)) => {
       // Mirror Node/undici's fetch error shape for transport failures: surface
       // them to JS as a `TypeError: "fetch failed"` whose `.cause` carries the
-      // low-level detail, instead of leaking the raw reqwest message into
+      // low-level detail, instead of leaking the raw transport message into
       // `.message` with an empty `.cause`. We pass the detail back as
       // `error: Some((detail, cause))` so JS can reconstruct the error chain
       // (`new TypeError("fetch failed", { cause: new Error(cause) })`).
-      // Only `ClientSend` (connection refused, DNS failure, connection reset,
-      // connection closed mid-response, request body stream errors, ...) is
-      // remapped here; other errors (e.g. permission errors) keep their type.
+      // Default and embedder transport failures share this shape. Other errors
+      // (e.g. permission errors) keep their type.
       // TODO(mmastrac): it would be a lot easier if we just passed a v8::Global through here instead
       if let FetchError::ClientSend(err_src) = &err {
         // Prefer the innermost cause (e.g. a user body-stream error, or hyper's
         // "connection closed before message completed") for `.cause`, falling
-        // back to the full reqwest message when there's no deeper source.
+        // back to the full transport message when there's no deeper source.
         let cause = std::error::Error::source(&err_src.source)
           .and_then(|client_err| client_err.downcast_ref::<hyper::Error>())
           .and_then(std::error::Error::source)
@@ -659,6 +701,12 @@ pub async fn op_fetch_send(
           .unwrap_or_else(|| err.to_string());
         return Ok(FetchResponse {
           error: Some((err.to_string(), cause)),
+          ..Default::default()
+        });
+      }
+      if let FetchError::HttpTransport(source) = &err {
+        return Ok(FetchResponse {
+          error: Some((err.to_string(), source.to_string())),
           ..Default::default()
         });
       }
@@ -1265,38 +1313,44 @@ where
   }
 
   fn call(&mut self, mut req: http::Request<ReqBody>) -> Self::Future {
-    // Range responses may contain compressed byte ranges that cannot be
-    // transparently decoded as a complete representation.
-    let skip_decompression = req.headers().contains_key(RANGE)
-      || req.headers().get(ACCEPT_ENCODING).is_some_and(|value| {
-        value.as_bytes().eq_ignore_ascii_case(b"identity")
-      });
-    if req.headers().contains_key(RANGE) {
-      req
-        .headers_mut()
-        .entry(ACCEPT_ENCODING)
-        .or_insert_with(|| HeaderValue::from_static("identity"));
-    } else {
-      req
-        .headers_mut()
-        .entry(ACCEPT_ENCODING)
-        .or_insert_with(|| HeaderValue::from_static("gzip,br"));
-    }
+    let skip_decompression = prepare_decompression_request(&mut req);
 
     let fut = self.inner.call(req);
     Box::pin(async move {
       let resp = fut.await?;
-      Ok(decompress_response(resp, skip_decompression))
+      Ok(decompress_response(
+        resp.map(box_raw_body),
+        skip_decompression,
+      ))
     })
   }
 }
 
+fn prepare_decompression_request(req: &mut http::Request<ReqBody>) -> bool {
+  // A byte range cannot be decoded as a complete compressed representation.
+  let skip = req.headers().contains_key(RANGE)
+    || req
+      .headers()
+      .get(ACCEPT_ENCODING)
+      .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"identity"));
+  let encoding = if req.headers().contains_key(RANGE) {
+    "identity"
+  } else {
+    "gzip,br"
+  };
+  req
+    .headers_mut()
+    .entry(ACCEPT_ENCODING)
+    .or_insert_with(|| HeaderValue::from_static(encoding));
+  skip
+}
+
 fn decompress_response(
-  resp: http::Response<Incoming>,
+  resp: http::Response<ResBody>,
   skip_decompression: bool,
 ) -> http::Response<ResBody> {
   if skip_decompression {
-    return resp.map(box_raw_body);
+    return resp;
   }
 
   // Some servers advertise a compressed empty body. A valid gzip/br stream is
@@ -1308,7 +1362,7 @@ fn decompress_response(
     .and_then(|v| v.parse::<u64>().ok())
     == Some(0);
   if is_empty {
-    return resp.map(box_raw_body);
+    return resp;
   }
 
   match resp
@@ -1318,7 +1372,7 @@ fn decompress_response(
   {
     Some(DecodeKind::Gzip) => decode_response(resp, DecodeKind::Gzip),
     Some(DecodeKind::Brotli) => decode_response(resp, DecodeKind::Brotli),
-    _ => resp.map(box_raw_body),
+    _ => resp,
   }
 }
 
@@ -1349,7 +1403,7 @@ enum DecodeKind {
 pub struct BodyDecoded;
 
 fn decode_response(
-  resp: http::Response<Incoming>,
+  resp: http::Response<ResBody>,
   kind: DecodeKind,
 ) -> http::Response<ResBody> {
   // Per the fetch spec, handling content codings only decodes the body; the
